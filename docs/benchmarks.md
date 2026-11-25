@@ -31,11 +31,11 @@ Market-maker books of exactly n series (both sides, 1 to 50 contracts, eight exp
 
 | Series | Books | Model rows x cols (median) | Time: median | p90 | max | Nodes (median) | Stopped at budget | Proven gap (max) |
 |---|---|---|---|---|---|---|---|---|
-| 10 | 50 | 27 x 18 | 0.07 ms | 0.10 ms | 2.48 ms | 1 | 0 | 0.30% |
-| 30 | 50 | 61 x 91 | 0.60 ms | 1.11 ms | 1.61 ms | 1 | 0 | 0.17% |
-| 100 | 20 | 141 x 731 | 19.96 ms | 33.07 ms | 50.60 ms | 1 | 0 | 0.02% |
-| 300 | 10 | 390 x 6317 | 1.77 s | 2.53 s | 4.32 s | 1 | 0 | 0.01% |
-| 1000 | 1 | 1168 x 58601 | 153.47 s | 153.47 s | 153.47 s | 1 | 0 | 0.00% |
+| 10 | 50 | 27 x 18 | 0.07 ms | 0.09 ms | 0.13 ms | 1 | 0 | 0.30% |
+| 30 | 50 | 61 x 91 | 0.60 ms | 1.16 ms | 1.79 ms | 1 | 0 | 0.17% |
+| 100 | 20 | 192 x 238 | 10.97 ms | 21.07 ms | 39.45 ms | 1 | 0 | 0.03% |
+| 300 | 10 | 526 x 702 | 733.68 ms | 1.14 s | 1.17 s | 1 | 0 | 0.01% |
+| 1000 | 1 | 1491 x 1765 | 18.00 s | 18.00 s | 18.00 s | 1 | 0 | 0.00% |
 
 ## Batch throughput
 
@@ -43,9 +43,9 @@ Accounts that hold the same series in different sizes share the model's matrix a
 
 | Series | Accounts | Cold: accounts/s | Warm: accounts/s | Root iterations: cold | warm |
 |---|---|---|---|---|---|
-| 10 | 200 | 15357 | 26022 | 31.11 | 6.22 |
-| 30 | 200 | 2436 | 3731 | 81.33 | 20.76 |
-| 100 | 200 | 23.06 | 46.73 | 1510 | 180.5 |
+| 10 | 200 | 9195 | 23408 | 31.11 | 6.22 |
+| 30 | 200 | 2170 | 3266 | 81.33 | 20.76 |
+| 100 | 200 | 36.56 | 56.3 | 383.7 | 85.14 |
 
 Batches use the defaults (`rel_gap` 1%, 200,000 nodes). Warm starts change only the root LP; branch-and-bound nodes start from their own bases either way.
 
@@ -55,10 +55,10 @@ The same models handed to HiGHS 1.16 (one thread, `mip_rel_gap = 0`, a 120 s lim
 
 | Books | Count | Solver: median | max | HiGHS: median | max | HiGHS hit its limit | Above HiGHS: mean | max |
 |---|---|---|---|---|---|---|---|---|
-| retail | 199 | 0.10 ms | 0.62 ms | 2.58 ms | 21.40 ms | 0 | 0.004% | 0.820% |
-| market maker, 10 series | 30 | 0.20 ms | 0.29 ms | 4.40 ms | 41.19 ms | 0 | 0.020% | 0.249% |
-| market maker, 30 series | 30 | 1.07 ms | 2.31 ms | 7.74 ms | 58.65 ms | 0 | 0.015% | 0.167% |
-| market maker, 100 series | 10 | 20.94 ms | 38.31 ms | 51.87 ms | 249.56 ms | 0 | 0.006% | 0.024% |
+| retail | 199 | 0.09 ms | 3.19 ms | 1.81 ms | 16.71 ms | 0 | 0.004% | 0.820% |
+| market maker, 10 series | 30 | 0.15 ms | 0.28 ms | 2.95 ms | 32.45 ms | 0 | 0.020% | 0.249% |
+| market maker, 30 series | 30 | 0.82 ms | 1.93 ms | 6.56 ms | 43.23 ms | 0 | 0.015% | 0.167% |
+| market maker, 100 series | 10 | 11.63 ms | 21.71 ms | 42.18 ms | 232.52 ms | 0 | 0.005% | 0.023% |
 
 Cases where HiGHS hit its limit are left out of the comparison columns.
 

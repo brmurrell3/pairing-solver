@@ -216,3 +216,47 @@ a loss row exactly zero. Neither needs mixed deliverables, puts or several expir
 though mixed deliverables make gaps much larger (mean 3.0% and up to 39% in the adjusted
 family, against 0.03% for retail books). No sufficient condition for integrality beyond
 two series is known yet.
+
+## Compact short straddles (plan Phase 4)
+
+**Setting.** Short puts and short calls of one lot size, on one underlying. R6 charges one
+lot of put `p` with one lot of call `c` at `max(U_p, U_c) + V_o`, where `U` is the uncovered
+requirement, `V` the market value, and `o` the leg with the smaller requirement. Phase 1
+(`short_straddle`) treats a tie as if the put were dearer, so `o` is the call when
+`U_p = U_c`. Margined separately, the two cost `U_p + U_c`, so the pair saves
+
+    U_p + U_c − max(U_p, U_c) − V_o = U_o − V_o =: g_o.
+
+The saving depends only on the cheaper leg.
+
+**Order.** Rank the class's shorts by `(U, calls before puts)`. Then any put and any call
+can pair, with the lower-ranked one as the cheap side. Each pair saves the cheap leg's `g`,
+and ties are charged as Phase 1 charges them.
+
+**Claim.** Choosing integer lots `y_{p,c}` for every pair is equivalent to choosing, for
+each short `k`, lots `a_k` on the cheap side and `b_k` on the dear side, with the same
+objective `Σ g_k a_k` and the same capacity use `a_k + b_k`. The conditions, for each
+direction (cheap puts against dear calls, and cheap calls against dear puts), are:
+
+- total cheap lots equal total dear lots, and
+- for every cheap leg at rank `t`, the cheap lots at rank `t` or above do not exceed the
+  dear lots of the other type ranked above `t`.
+
+**Proof.** In one direction, a cheap lot at rank `t` may pair with any dear lot of the
+other type ranked above `t`. The candidate sets shrink as `t` rises, so the graph is nested
+as in item 4, and the same argument applies with ranks in place of expirations. A pairing
+that uses every cheap and every dear lot exactly exists if and only if the conditions hold.
+It can be taken integral, because the supplies are integers and transportation problems
+have integral vertices. Given `y`, setting `a` and `b` to its cheap-side and dear-side sums
+satisfies the conditions; given `a` and `b`, the pairing is a valid `y`. ∎
+
+`read_solution` builds the pairing by taking cheap lots from the highest rank down and
+matching each with any unused dear lot ranked above it. That never blocks a later cheap
+lot, whose candidates include all of these.
+
+**Effect.** Two columns per short and about one row per short replace one column per
+pair. The `solver` test checks that both forms give the same exact optimum on 400 random
+books. Branching is slower on the compact form for small books (the 1,000-case HiGHS test
+took 40 s against 18 s), so it applies only to classes with more than 256 pairs
+(`SolveOptions::compact_straddle_pairs`). A 1,000-series market-maker book went from
+58,601 to 1,765 columns and from 153 s to 17.7 s.

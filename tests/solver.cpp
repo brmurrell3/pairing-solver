@@ -300,6 +300,31 @@ void hand_cases() {
     CHECK_THROWS(check_solution(bull, r, bad));
 }
 
+// The compact straddle form (Builder::straddles) against one template per pair: the same
+// exact optimum on random books with many short puts and calls, and every straddle it
+// reads back is one Phase 1 accepts (the checker prices it).
+void compact_straddles() {
+    std::mt19937_64 rng(5'160'000);
+    const ExpiryRule rules[] = {ExpiryRule::pairwise, ExpiryRule::nearest_long, ExpiryRule::same_expiry};
+    int used = 0;
+    for (int k = 0; k < 400; ++k) {
+        gen::Shape shape;
+        shape.max_series = 14;
+        shape.max_quantity = 4;
+        shape.adjusted = k % 4 == 0;
+        Portfolio p = gen::portfolio(rng, shape);
+        RuleSet rr = gen::rules(rng, rules[k % 3]);
+        SolveOptions pairs{1, 0}, compact{1, 0};
+        pairs.compact_straddle_pairs = 1'000'000;
+        compact.compact_straddle_pairs = 0;
+        Solution a = solve(p, rr, pairs), b = solve(p, rr, compact);
+        CHECK_EQ(a.total, b.total);
+        CHECK(near(a.lp_bound, b.lp_bound));
+        for (const auto& st : b.structures) used += st.kind == StructureKind::straddle;
+    }
+    CHECK(used > 100);  // the comparison exercised the compact form
+}
+
 // The greedy baseline: the checker accepts what it builds, it never beats the exact
 // solve, and on a lone vertical it finds the spread.
 void greedy_baseline() {
@@ -340,6 +365,7 @@ int run_solver_tests() {
     run("knapsacks", knapsacks);
     run("hand_cases", hand_cases);
     run("greedy_baseline", greedy_baseline);
+    run("compact_straddles", compact_straddles);
     ::check::context().clear();
     return groups;
 }

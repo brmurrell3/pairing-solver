@@ -113,7 +113,7 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 - **Results** (docs/benchmarks.md):
   - The solver saves 57.9% of the standalone requirement on retail books, against 55.4% for greedy. Greedy's excess averages 5.4% (median 0) on retail, 15.5% with adjusted series, 10.8% on market-maker books and 37.5% on the adversarial set.
   - The continuous optimum is already whole for 456 of 496 retail books. With adjusted series, only 232 of 496 are whole, and the mean gap is 3.0% (largest 39%).
-  - Market-maker books solve at the root up to 300 series (median 1.8 s). One 1,000-series book takes 153 s: its model has 58,601 columns, 57,600 of them short straddle templates, which grow as short puts × short calls, and its root LP takes about 107,000 iterations in the dense simplex.
+  - Market-maker books solve at the root up to 300 series (median 1.8 s). One 1,000-series book took 153 s: its model had 58,601 columns, 57,600 of them short straddle templates, which grow as short puts × short calls, and its root LP took about 107,000 iterations in the dense simplex. The compact straddle form (Phase 4) brought it to 1,765 columns and 18.0 s.
   - Warm-starting each account from the previous account's root basis cuts root iterations 5 to 8 times and raises throughput 1.5 to 2 times (100 series: 23 to 47 accounts per second).
   - On retail books and market-maker books of up to 100 series, the solver is 2.5 to 25 times faster than HiGHS at the median, and on average 0.004% to 0.02% above its optimum.
 - **Not covered:** HiGHS is not timed at 300 and 1,000 series or in batches. Real chains (`data/private/`) are not benchmarked.
@@ -131,7 +131,8 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 **Status (2026-11-25, in progress):**
 - **Proofs:** written in [proofs.md](proofs.md) for items 1, 2 (with the cut-date argument for the stricter readings), 4 and 5, and short ones for items 3 and 6.
 - **Integrality:** the `solver` test keeps two counterexamples: three calls on one deliverable (gap 0.67%) and a one-lot iron condor (0.37%). No 2-series book of 78,000 searched had a gap. No sufficient condition beyond two series yet (proofs.md, "Integrality").
-- **Open:** the dynamic program over strikes and its complexity; template-only hardness (needs the Matsypura and Timkovsky papers, Inputs item 2); pruning dominated straddle templates, which grow as short puts × short calls and are 57,600 of the 58,601 columns at 1,000 series (Phase 3).
+- **Straddles:** done. Above 256 short put-call pairs, the model uses one cheap and one dear column per short and suffix rows instead of one template per pair (proofs.md, "Compact short straddles"). The `solver` test `compact_straddles` checks equal totals against the per-pair form on 400 random books. The 1,000-series book went from 58,601 to 1,765 columns and from 153 s to 18.0 s; 300 series from 1.8 s to 0.73 s median. Below the threshold the per-pair form stays, because the compact form slowed small books (the 1,000 x 40 HiGHS run took 40 s instead of 18 s with it everywhere).
+- **Open:** the dynamic program over strikes and its complexity; template-only hardness (needs the Matsypura and Timkovsky papers, Inputs item 2).
 
 ## Phase 5: publish
 

@@ -29,6 +29,10 @@ struct SolveOptions {
     // Warm start for a batch (spec §3.2): the root basis of a previous solve whose model
     // had the same shape, as Solution::root_basis returns it. Empty: a cold start.
     LpBasis warm_start{};
+    // Short straddles (R6) of one lot size use a compact form, two columns per short, when a
+    // class has more put-call pairs than this; otherwise one template per pair, which
+    // branches faster on small books. Both give the same optimum.
+    std::int64_t compact_straddle_pairs = 256;
 };
 
 // A lot of a position as a Phase 1 leg: one lot of a contract delivering w units is an
@@ -122,9 +126,12 @@ struct Model {
 
     // What each column means, for reading a solution back.
     struct Column {
-        enum Kind { template_unit, member, loss, aggregate } kind;
-        int index;  // template, or group
+        // straddle_cheap and straddle_expensive: lots of a short option that join short
+        // straddles (R6) on the cheaper or the dearer side; see Builder::straddles.
+        enum Kind { template_unit, member, loss, aggregate, straddle_cheap, straddle_expensive } kind;
+        int index;  // template, group, or straddle class
         int position = 0;
+        int rank = 0;  // straddle columns: the option's place in its class's order
     };
     std::vector<Column> column;
     struct Template {
@@ -133,6 +140,7 @@ struct Model {
     };
     std::vector<Template> templates;
     int groups = 0;
+    int straddle_classes = 0;
     std::vector<int> capacity_row;  // per option position, then the stock line
 };
 

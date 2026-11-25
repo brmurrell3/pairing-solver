@@ -10,6 +10,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 
 #include "pairing/solver.hpp"
 
@@ -41,7 +42,9 @@ struct Builder {
     int n;
     bool has_stock;
 
-    Builder(const Portfolio& p_, const RuleSet& r_, std::int64_t lots_) : p(p_), r(r_), lots(lots_) {
+    std::int64_t compact_straddle_pairs;
+    Builder(const Portfolio& p_, const RuleSet& r_, std::int64_t lots_, std::int64_t compact)
+        : p(p_), r(r_), lots(lots_), compact_straddle_pairs(compact) {
         n = static_cast<int>(p.options.size());
         has_stock = p.stock.shares != 0;
         m.lots_per_contract = lots;
@@ -100,11 +103,31 @@ struct Builder {
         const Market& mk = p.market;
         Requirement q;
         // R6: short put and short call in the smallest whole-lot ratio of equal share-equivalents.
+        // Large classes of one lot size go through straddles(), which needs O(n) columns, not
+        // one per pair; small classes and mixed lot sizes keep a template per pair.
+        // The compact form is used only for classes with more pairs than
+        // SolveOptions::compact_straddle_pairs: on
+        // small books, branching on pair columns is faster (the 1,000-case HiGHS test took
+        // 40 s with the compact form everywhere, against 18 s).
+        const std::int64_t compact_pairs = compact_straddle_pairs;
+        std::map<std::int64_t, std::vector<int>> by_size;
+        for (int i = 0; i < n; ++i)
+            if (p.options[i].quantity < 0) by_size[std::llabs(leg(i, 1).units())].push_back(i);
+        std::set<std::int64_t> compact;
+        for (const auto& [size, shorts] : by_size) {
+            std::int64_t puts = 0, calls = 0;
+            for (int i : shorts) (p.options[i].option.type == OptionType::put ? puts : calls) += 1;
+            if (puts * calls > compact_pairs) {
+                compact.insert(size);
+                straddles(shorts);
+            }
+        }
         for (int i = 0; i < n; ++i) {
             if (!is(i, OptionType::put, -1)) continue;
             for (int j = 0; j < n; ++j) {
                 if (!is(j, OptionType::call, -1)) continue;
                 std::int64_t wi = leg(i, 1).option.deliverable, wj = leg(j, 1).option.deliverable;
+                if (wi == wj && compact.count(std::llabs(leg(i, 1).units()))) continue;
                 std::int64_t g = std::gcd(wi, wj), qi = wj / g, qj = wi / g;
                 if (accepted([&] { return short_straddle(leg(i, qi), leg(j, qj), mk, r); }, q))
                     add_template(StructureKind::straddle, {{i, qi}, {j, qj}}, q);
@@ -154,6 +177,77 @@ struct Builder {
                 } else if (!long_stock && call.quantity > 0 && put.quantity < 0) {
                     if (accepted([&] { return reverse_conversion(s, leg(c, 1), leg(u, 1), mk, r); }, q))
                         add_template(StructureKind::reverse_conversion, {{stock_position, w}, {c, 1}, {u, 1}}, q);
+                }
+            }
+        }
+    }
+
+    // R6 for short puts and calls of one lot size. One lot of each costs the greater of the
+    // two uncovered requirements plus the other's market value, so the pair saves
+    // g = U − V of its cheaper leg (U uncovered, V market value), whatever the dearer leg
+    // is. Order the class's shorts by (U, calls before puts): Phase 1 charges a tie as if
+    // the put were dearer. Any put and call pair, the lower-ranked leg being the cheap one.
+    // So each short gets two columns, its lots on the cheap side (saving g) and on the dear
+    // side (saving nothing). Cheap puts must be matched to dearer calls and cheap calls to
+    // dearer puts. Each is a transportation problem on a nested graph, feasible exactly when
+    // the suffix condition of spec §3.1 item 4 holds over ranks (docs/proofs.md), with
+    // equal totals. That replaces one template per pair: 57,600 of the 58,601 columns of a
+    // 1,000-series book.
+    void straddles(const std::vector<int>& shorts) {
+        std::vector<std::tuple<Money, int, int>> order;  // (U per lot, 0 call / 1 put, position)
+        bool puts = false, calls = false;
+        for (int i : shorts) {
+            const bool put = p.options[i].option.type == OptionType::put;
+            (put ? puts : calls) = true;
+            order.push_back({uncovered_short(leg(i, 1), p.market, r), put ? 1 : 0, i});
+        }
+        if (!puts || !calls) return;
+        std::sort(order.begin(), order.end());
+        const int cls = m.straddle_classes++;
+        const int k = static_cast<int>(order.size());
+        std::vector<int> cheap(k, -1), dear(k, -1);
+        for (int rank = 0; rank < k; ++rank) {
+            const auto [u, put, i] = order[rank];
+            // The cheap side needs a dearer leg of the other type; the dear side a cheaper one.
+            bool above = false, below = false;
+            for (int o = 0; o < k; ++o)
+                if (std::get<1>(order[o]) != put) (o > rank ? above : below) = true;
+            Money saving = u - market_value(leg(i, 1));
+            const double up = static_cast<double>(cap[i]);
+            if (above && saving > Money{}) {
+                cheap[rank] = m.lp.add_column(-dollars(saving), 0, up, {{m.capacity_row[i], 1.0}});
+                m.integer.push_back(true);
+                m.column.push_back({Model::Column::straddle_cheap, cls, i, rank});
+            }
+            if (below) {
+                dear[rank] = m.lp.add_column(0, 0, up, {{m.capacity_row[i], 1.0}});
+                m.integer.push_back(true);
+                m.column.push_back({Model::Column::straddle_expensive, cls, i, rank});
+            }
+        }
+        // For each direction (cheap puts against dear calls, cheap calls against dear puts):
+        // total cheap lots equal total dear lots, and for every rank t the cheap lots ranked
+        // t or higher do not exceed the dear lots ranked above t.
+        for (int cheap_type : {1, 0}) {
+            int total = m.lp.add_row(0, 0);
+            bool any = false;
+            for (int rank = 0; rank < k; ++rank) {
+                const int type = std::get<1>(order[rank]);
+                if (type == cheap_type && cheap[rank] >= 0) {
+                    m.lp.columns[cheap[rank]].push_back({total, 1.0});
+                    any = true;
+                }
+                if (type != cheap_type && dear[rank] >= 0) m.lp.columns[dear[rank]].push_back({total, -1.0});
+            }
+            (void)any;
+            for (int t = 0; t < k; ++t) {
+                if (std::get<1>(order[t]) != cheap_type || cheap[t] < 0) continue;
+                // dear lots ranked above t, less cheap lots ranked t or higher, at least 0
+                int row = m.lp.add_row(0, lp_infinity);
+                for (int rank = t; rank < k; ++rank) {
+                    const int type = std::get<1>(order[rank]);
+                    if (type == cheap_type && cheap[rank] >= 0) m.lp.columns[cheap[rank]].push_back({row, -1.0});
+                    if (type != cheap_type && rank > t && dear[rank] >= 0) m.lp.columns[dear[rank]].push_back({row, 1.0});
                 }
             }
         }
@@ -338,7 +432,7 @@ struct Builder {
 
 Model build_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     if (o.lots_per_contract < 1) throw std::invalid_argument("lots per contract must be at least 1");
-    Builder b(p, r, o.lots_per_contract);
+    Builder b(p, r, o.lots_per_contract, o.compact_straddle_pairs);
     b.capacities();
     b.templates();
     b.long_boxes();
@@ -353,9 +447,22 @@ Solution read_solution(const Model& m, const Portfolio& p, const std::vector<dou
     const int n = static_cast<int>(p.options.size());
     std::vector<std::int64_t> used(n + 1, 0);
     std::vector<std::vector<StructureLeg>> spreads(m.groups);
+    struct Lots {
+        int rank;
+        bool cheap;
+        int position;
+        std::int64_t lots;
+    };
+    std::vector<std::vector<Lots>> straddle_lots(m.straddle_classes);
     for (int j = 0; j < m.lp.cols(); ++j) {
         const auto& c = m.column[j];
         if (c.kind == Model::Column::loss || c.kind == Model::Column::aggregate) continue;
+        if (c.kind == Model::Column::straddle_cheap || c.kind == Model::Column::straddle_expensive) {
+            std::int64_t v = std::llround(x[j]);
+            if (std::fabs(x[j] - static_cast<double>(v)) > 1e-6) throw std::logic_error("solution is not on the grid");
+            if (v > 0) straddle_lots[c.index].push_back({c.rank, c.kind == Model::Column::straddle_cheap, c.position, v});
+            continue;
+        }
         std::int64_t v = std::llround(x[j]);
         if (std::fabs(x[j] - static_cast<double>(v)) > 1e-6) throw std::logic_error("solution is not on the grid");
         if (v <= 0) continue;
@@ -375,6 +482,37 @@ Solution read_solution(const Model& m, const Portfolio& p, const std::vector<dou
     }
     for (auto& legs : spreads)
         if (!legs.empty()) s.structures.push_back({StructureKind::spread, std::move(legs), {}});
+    // Straddles: match cheap lots to dear lots of the other type ranked above them, dearest
+    // cheap lots first. Each cheap lot's candidates contain those of every dearer cheap lot,
+    // so taking any candidate never blocks a later one, and the suffix rows guarantee one.
+    for (auto& lots : straddle_lots) {
+        std::sort(lots.begin(), lots.end(), [](const Lots& a, const Lots& b) { return a.rank > b.rank; });
+        for (int cheap_type : {1, 0}) {
+            std::vector<Lots*> pool;  // dear lots of the other type seen so far (ranked higher)
+            for (auto& l : lots) {
+                const bool put = p.options[l.position].option.type == OptionType::put;
+                if (!l.cheap && put != (cheap_type == 1)) {
+                    pool.push_back(&l);
+                    continue;
+                }
+                if (!l.cheap || put != (cheap_type == 1)) continue;
+                std::int64_t need = l.lots;
+                while (need > 0) {
+                    while (!pool.empty() && pool.back()->lots == 0) pool.pop_back();
+                    if (pool.empty()) throw std::logic_error("straddle lots do not match");
+                    Lots& d = *pool.back();
+                    const std::int64_t q = std::min(need, d.lots);
+                    const int put_pos = put ? l.position : d.position, call_pos = put ? d.position : l.position;
+                    s.structures.push_back({StructureKind::straddle, {{put_pos, q}, {call_pos, q}}, {}});
+                    for (int pos : {put_pos, call_pos}) used[pos] += q;
+                    need -= q;
+                    d.lots -= q;
+                }
+            }
+            for (auto* d : pool)
+                if (d->lots != 0) throw std::logic_error("straddle lots do not match");
+        }
+    }
     for (int i = 0; i <= n; ++i) {
         std::int64_t cap = i < n ? std::llabs(p.options[i].quantity) * m.lots_per_contract : std::llabs(p.stock.shares);
         if (used[i] > cap) throw std::logic_error("solution uses more than a position holds");
