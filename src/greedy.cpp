@@ -1,9 +1,10 @@
 // The Phase 3 greedy baseline (docs/plan.md): a fixed template priority with nearest
-// strikes first, standing in for common production practice. It pairs two legs at a time,
-// takes a pairing whenever Phase 1 prices it below the legs' standalone requirements, and
-// never revisits a choice. The checker prices the result, as it does the solver's.
+// strikes first, standing in for common production practice. It pairs two legs at a time
+// (then merges call and put spreads into iron condors), takes a pairing whenever Phase 1
+// prices it below the legs' standalone requirements, and never revisits a choice. The checker prices the result, as it does the solver's.
 #include <algorithm>
 #include <cstdlib>
+#include <numeric>
 #include <stdexcept>
 #include <tuple>
 
@@ -43,10 +44,19 @@ Solution greedy(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
         return p.options[i].option.type == t && (p.options[i].quantity > 0) == (side > 0);
     };
 
+    // Shorts are covered in order of their standalone requirement per lot, most expensive
+    // first, so the costliest shorts get the longs (index order would make the baseline
+    // weaker than practice for no reason).
+    std::vector<int> shorts_first(n);
+    std::iota(shorts_first.begin(), shorts_first.end(), 0);
+    std::vector<Money> per_lot(n);
+    for (int i = 0; i < n; ++i) per_lot[i] = alone(i, 1);
+    std::stable_sort(shorts_first.begin(), shorts_first.end(), [&](int a, int b) { return per_lot[b] < per_lot[a]; });
+
     // 1. Vertical and calendar spreads: each short against the nearest-strike long of its
     //    type and contract size that Phase 1 accepts as a spread, one lot for one lot.
     for (OptionType t : {OptionType::call, OptionType::put}) {
-        for (int i = 0; i < n; ++i) {
+        for (int i : shorts_first) {
             if (!is(i, t, -1)) continue;
             std::vector<int> longs;
             for (int j = 0; j < n; ++j)
@@ -71,9 +81,37 @@ Solution greedy(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
         }
     }
 
+    // 1b. Iron condors and butterflies: a call spread and a put spread of the same size
+    //     and expirations merge into one four-leg spread when Phase 1 prices it lower,
+    //     since a price can finish beyond only one of the two (R2's maximum loss).
+    for (std::size_t a = 0; a < s.structures.size(); ++a) {
+        for (std::size_t b = a + 1; b < s.structures.size(); ++b) {
+            Structure &x = s.structures[a], &y = s.structures[b];
+            if (x.kind != StructureKind::spread || y.kind != StructureKind::spread || x.legs.size() != 2 ||
+                y.legs.size() != 2 || x.legs[0].quantity != y.legs[0].quantity)
+                continue;
+            const auto& ox = p.options[x.legs[0].position].option;
+            const auto& oy = p.options[y.legs[0].position].option;
+            if (ox.type == oy.type) continue;
+            std::vector<OptionLeg> two_x, two_y, four;
+            for (const auto& l : x.legs) two_x.push_back(leg(l.position, l.quantity));
+            for (const auto& l : y.legs) two_y.push_back(leg(l.position, l.quantity));
+            four = two_x;
+            four.insert(four.end(), two_y.begin(), two_y.end());
+            if (!spread_validity(four, r)) continue;
+            Requirement req;
+            if (!accepted([&] { return spread(four, mk, r).requirement; }, req)) continue;
+            Money apart = spread(two_x, mk, r).requirement.total() + spread(two_y, mk, r).requirement.total();
+            if (!(req.total() < apart)) continue;
+            x.legs.insert(x.legs.end(), y.legs.begin(), y.legs.end());
+            s.structures.erase(s.structures.begin() + static_cast<std::ptrdiff_t>(b));
+            break;
+        }
+    }
+
     // 2. Short straddles and strangles: each remaining short put against the nearest-strike
     //    remaining short call of its contract size.
-    for (int i = 0; i < n; ++i) {
+    for (int i : shorts_first) {
         if (!is(i, OptionType::put, -1)) continue;
         std::vector<int> calls;
         for (int j = 0; j < n; ++j)

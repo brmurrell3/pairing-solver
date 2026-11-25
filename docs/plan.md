@@ -1,6 +1,6 @@
 # Plan
 
-**Current status (2026-11-25):** Phases 0, 1 and 2 done. Phase 3 started: the greedy baseline is built.
+**Current status (2026-11-25):** Phases 0 to 3 done. Phase 4 (structured algorithm and theory) is next.
 
 ## Decisions
 
@@ -106,6 +106,18 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
   - all of the above against HiGHS on the same subproblems.
 
 **Done when** one command regenerates every table from fixed seeds.
+
+**Status (2026-11-25, done):** `tools/run_guarded.sh -m 4096 -t 3000 -- build/pairing_bench > docs/benchmarks.md` regenerates all five tables in about 8 minutes (Linux, g++ 13.3, HiGHS 1.16). `pairing_bench <table>` runs one table: `savings`, `integrality`, `timing`, `batch` or `highs`.
+- **Greedy** (`src/greedy.cpp`): verticals and calendars by nearest strike, costliest shorts first, merged into iron condors where Phase 1 prices them lower; then straddles; then covered and protective stock. The `solver` test checks it never beats the exact solve on 600 random books. Two choices made it stronger than a naive version, measured as greedy's mean excess on retail books. The condor merge brought it from 11.1% to 6.9%, and covering the costliest shorts first (instead of index order) brought it to 5.4%.
+- **Generators** (`bench/books.hpp`): retail, market maker, adjusted series and adversarial, described in `data/README.md`.
+- **Results** (docs/benchmarks.md):
+  - The solver saves 57.9% of the standalone requirement on retail books, against 55.4% for greedy. Greedy's excess averages 5.4% (median 0) on retail, 15.5% with adjusted series, 10.8% on market-maker books and 37.5% on the adversarial set.
+  - The continuous optimum is already whole for 456 of 496 retail books. With adjusted series, only 232 of 496 are whole, and the mean gap is 3.0% (largest 39%).
+  - Market-maker books solve at the root up to 300 series (median 1.8 s). One 1,000-series book takes 153 s: its model has 58,601 columns, mostly short straddle templates, which grow as short puts × short calls, and its root LP takes about 107,000 iterations in the dense simplex.
+  - Warm-starting each account from the previous account's root basis cuts root iterations 5 to 8 times and raises throughput 1.5 to 2 times (100 series: 23 to 47 accounts per second).
+  - On retail books and market-maker books of up to 100 series, the solver is 2.5 to 25 times faster than HiGHS at the median, and on average 0.004% to 0.02% above its optimum.
+- **Not covered:** HiGHS is not timed at 300 and 1,000 series or in batches. Real chains (`data/private/`) are not benchmarked.
+- **For Phase 4:** the 1,000-series case points at two things: pruning dominated straddle templates (or generating them as needed), and a sparse or structured method in place of the dense inverse.
 
 ## Phase 4: structured algorithm and theory
 

@@ -203,14 +203,14 @@ bool DualSimplex::restore_dual_feasibility(double tol) {
     return flipped;
 }
 
-int DualSimplex::choose_row(bool bland) const {
+int DualSimplex::choose_row(bool bland, double slack) const {
     int best = -1;
     double best_v = 0;
     for (int k = 0; k < m_; ++k) {
         int j = head_[k];
         double v = 0;
-        if (x_[j] < lo_[j] - primal_tol * (1 + std::fabs(lo_[j]))) v = lo_[j] - x_[j];
-        else if (x_[j] > up_[j] + primal_tol * (1 + std::fabs(up_[j]))) v = x_[j] - up_[j];
+        if (x_[j] < lo_[j] - slack * primal_tol * (1 + std::fabs(lo_[j]))) v = lo_[j] - x_[j];
+        else if (x_[j] > up_[j] + slack * primal_tol * (1 + std::fabs(up_[j]))) v = x_[j] - up_[j];
         if (v <= 0) continue;
         if (!bland) {
             // Dual steepest edge: the violation over the norm of B⁻¹'s row, the step's
@@ -298,7 +298,11 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
             // of a column's range in the objective.
             bool flipped = restore_dual_feasibility(checks > 10 ? 100 * dual_tol : checks > 1 ? 10 * dual_tol : dual_tol);
             if (flipped) compute_primal();
-            if (flipped || choose_row(false) >= 0) continue;
+            // The same holds for primal values: on rows whose ranges reach 1e8 (loss rows), a
+            // refactorization can leave a basic variable a few 1e-9 outside its bound, and
+            // pivoting it back can undo itself. Repeated checks accept up to 1,000 times the
+            // tolerance, about 1e-6 at a zero bound.
+            if (flipped || choose_row(false, checks > 10 ? 1000 : checks > 1 ? 10 : 1) >= 0) continue;
             if (unperturb()) continue;
             for (int j = 0; j < n_; ++j)
                 if (std::fabs(x_[j]) >= artificial_bound / 2) return finish(LpStatus::unbounded, iterations);
@@ -630,7 +634,9 @@ MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, con
         have_current = false;
         if (prune(current.bound)) continue;
         load(current.changes);
-        LpSolution sol = simplex.solve();
+        const bool warm = root && o.root_basis.head.size() == static_cast<std::size_t>(lp.rows()) &&
+                          o.root_basis.state.size() == static_cast<std::size_t>(lp.rows() + lp.cols());
+        LpSolution sol = simplex.solve(warm ? o.root_basis : LpBasis{});
         ++out.nodes;
         out.iterations += sol.iterations;
         if (root) {

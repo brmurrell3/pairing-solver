@@ -395,6 +395,7 @@ Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     mo.node_limit = o.node_limit;
     mo.start.assign(m.lp.cols(), 0.0);  // everything standalone is always feasible
     mo.priority = m.priority;
+    mo.root_basis = o.warm_start;
     MipSolution mip = branch_and_bound(m.lp, m.integer, mo);
     if (mip.status != MipStatus::optimal && mip.status != MipStatus::node_limit)
         throw std::runtime_error(std::string("the subproblem did not solve: ") + status_name(mip.status));
@@ -446,6 +447,8 @@ Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     s.columns = m.lp.cols();
     s.nodes = mip.nodes;
     s.iterations = mip.iterations;
+    s.root_iterations = mip.root.iterations;
+    s.root_basis = mip.root.basis;
     return s;
 }
 

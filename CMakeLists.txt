@@ -46,11 +46,19 @@ add_test(NAME cboe_manual_samples
 add_test(NAME solver COMMAND pairing_tests solver)
 add_test(NAME exhaustive COMMAND pairing_tests exhaustive 1000)
 
+# Phase 3 benchmarks: build/pairing_bench > docs/benchmarks.md regenerates every table.
+add_executable(pairing_bench bench/bench.cpp)
+target_include_directories(pairing_bench PRIVATE tests)
+target_link_libraries(pairing_bench PRIVATE pairing)
+target_compile_options(pairing_bench PRIVATE -Wall -Wextra -Wpedantic)
+
 # HiGHS is a test-only oracle (spec §3.4): linked into this test binary, never into the library.
 find_package(highs 1.16 CONFIG)
 if(highs_FOUND)
   add_executable(pairing_highs_tests tests/highs.cpp)
   target_link_libraries(pairing_highs_tests PRIVATE pairing highs::highs)
+  target_link_libraries(pairing_bench PRIVATE highs::highs)
+  target_compile_definitions(pairing_bench PRIVATE PAIRING_BENCH_HIGHS)
   target_compile_options(pairing_highs_tests PRIVATE -Wall -Wextra -Wpedantic)
   # Phase 2 criteria (docs/plan.md): 1,000 portfolios of up to 40 series within 1% of HiGHS,
   # and five large ones of 50 to 200 series within 1% and 30 s each. HiGHS is slow on two of

@@ -75,7 +75,7 @@ private:
     void compute_primal();
     void compute_dual();
     bool restore_dual_feasibility(double tol);
-    int choose_row(bool bland) const;
+    int choose_row(bool bland, double slack = 1) const;
     void load(const LpBasis& b);
     LpSolution finish(LpStatus status, int iterations) const;
 };
@@ -103,6 +103,9 @@ struct MipOptions {
     // Branching priority per column (empty: all equal). Fractional columns of the highest
     // priority present are branched on, and fixed by the root dive, first.
     std::vector<int> priority;
+    // A basis to start the root from (empty: the slack basis), such as another account's
+    // root basis on the same model shape (spec §3.2). Ignored if its size does not match.
+    LpBasis root_basis;
 };
 
 struct MipSolution {

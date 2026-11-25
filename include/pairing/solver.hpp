@@ -26,6 +26,9 @@ struct SolveOptions {
     // the best possible (owner, 2026-11-25: speed over the last 1%; docs/plan.md). 0 is exact.
     double rel_gap = 0.01;
     long node_limit = 200'000;  // a hit returns the best assignment found, with its status
+    // Warm start for a batch (spec §3.2): the root basis of a previous solve whose model
+    // had the same shape, as Solution::root_basis returns it. Empty: a cold start.
+    LpBasis warm_start{};
 };
 
 // A lot of a position as a Phase 1 leg: one lot of a contract delivering w units is an
@@ -90,12 +93,15 @@ struct Solution {
     bool lp_integral = false; // the continuous optimum was already on the grid
     int rows = 0, columns = 0, nodes = 0;
     long iterations = 0;
+    long root_iterations = 0;
+    LpBasis root_basis;  // for SolveOptions::warm_start on the next account
 };
 
 Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o = {});
 
-// The Phase 3 baseline: fixed template priority (spreads, then straddles, then stock
-// against single options), nearest strikes first, two legs at a time, no revisiting. Only
+// The Phase 3 baseline: fixed template priority (verticals and calendars, merged into iron
+// condors where cheaper, then straddles, then stock against single options), nearest
+// strikes first, two legs at a time, no revisiting. Only
 // lots_per_contract is read from o. Fills structures, residuals, total and all_standalone.
 Solution greedy(const Portfolio& p, const RuleSet& r, const SolveOptions& o = {});
 

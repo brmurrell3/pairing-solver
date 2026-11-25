@@ -85,4 +85,5 @@ ctest --test-dir build --output-on-failure
 - **`exhaustive`:** the solver against brute force on 3,000 small portfolios, exact (`rel_gap = 0`).
 - **`highs`, `highs_large`:** the Phase 2 criteria against HiGHS (about 3 and 6 minutes). `pairing_highs_tests <n> [max series] [rel_gap]` and `pairing_highs_tests large [rel_gap] [case]` run them by hand.
 - **Sanitizers:** `cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined -O1"`, then build and run `ctest --test-dir build-asan -E highs` under the guard with `-m 8192`. ASan needs the higher memory cap.
+- **Benchmarks:** `tools/run_guarded.sh -m 4096 -t 3000 -- build/pairing_bench > docs/benchmarks.md` regenerates every Phase 3 table (about 8 minutes); `pairing_bench <table>` runs one.
 - `tools/check_fixtures.py` reads spread cases only, so it runs on `cboe_manual.toml` but not on `cboe_manual_samples.toml`.
