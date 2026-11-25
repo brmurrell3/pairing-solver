@@ -266,6 +266,31 @@ void hand_cases() {
             CHECK_EQ(s.total, box_alone);
         }
 
+    // Integrality counterexamples (docs/proofs.md, "Integrality"). The continuous optimum
+    // is not whole even with one deliverable, and even with calls only.
+    {
+        // An iron condor, one contract a leg: the LP keeps the call spread and half the
+        // wider put spread, whose loss rides under the call spread's.
+        Portfolio condor = book({option(T::call, -1, 107.5, 2.34, {2026, 4, 17}), option(T::call, 1, 115, 1.07, {2026, 4, 17}),
+                                 option(T::put, 1, 75, 0.22, {2026, 4, 17}), option(T::put, -1, 90, 2.71, {2026, 4, 17})});
+        condor.market.underlying = usd(97.29);
+        Solution c = solve(condor, r, exact);
+        CHECK(!c.lp_integral);
+        CHECK(near(c.lp_bound, 1622.90));
+
+        CHECK_EQ(c.total, usd(1629));
+
+        // Three calls: the LP pairs 11/9 short 45s with the long 40 and 2/9 of a long 67.50,
+        // at zero loss; whole contracts cannot.
+        Portfolio calls = book({option(T::call, 1, 40, 15.83, {2026, 2, 20}), option(T::call, -3, 45, 10.85, {2026, 2, 20}),
+                                option(T::call, 4, 67.5, 0.22, {2026, 3, 20})});
+        calls.market.underlying = usd(55.83);
+        Solution k = solve(calls, r, exact);
+        CHECK(!k.lp_integral);
+        CHECK(near(9 * k.lp_bound, 50264.60));  // ninths: 11/9 and 2/9 of a contract
+        CHECK_EQ(k.total, usd(5622.60));
+    }
+
     // The checker rejects a structure Phase 1 does not accept and a miscount.
     Solution bad = solve(bull, r, exact);
     bad.structures[0].legs.pop_back();
