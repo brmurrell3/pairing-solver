@@ -20,6 +20,7 @@ add_library(pairing
   src/solver.cpp
   src/checker.cpp
   src/greedy.cpp
+  src/dp.cpp
 )
 target_include_directories(pairing PUBLIC include)
 target_link_libraries(pairing PRIVATE tomlplusplus::tomlplusplus)

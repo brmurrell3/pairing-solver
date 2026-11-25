@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -351,6 +352,57 @@ void greedy_baseline() {
     }
 }
 
+// One expiration, American, listed, 100-share series only: the scope of solve_strike_dp.
+Portfolio dp_book(std::mt19937_64& rng, int series, int quantity) {
+    gen::Shape shape;
+    shape.max_series = series;
+    shape.min_series = series;
+    shape.max_quantity = quantity;
+    shape.max_stock_lots = 0;
+    shape.expiries = 1;
+    Portfolio g = gen::portfolio(rng, shape), p = g;
+    p.options.clear();
+    std::set<std::pair<int, Money>> seen;
+    for (const auto& l : g.options)
+        if (l.option.style == Style::american && l.option.listing == Listing::listed &&
+            seen.insert({static_cast<int>(l.option.type), l.option.strike}).second)
+            p.options.push_back(l);
+    return p;
+}
+
+// The strike dynamic program against branch-and-bound with straddles off, exact. Both
+// totals come from the checker; the DP also checks its own objective against it.
+void strike_dp() {
+    RuleSet r;
+    Portfolio bull = book({option(OptionType::call, 1, 50, 3), option(OptionType::call, -1, 55, 1)});
+    SolveOptions plain{1, 0};
+    plain.straddles = false;
+    Solution d = solve_strike_dp(bull, r);
+    CHECK_EQ(d.structures.size(), std::size_t{1});
+    CHECK_EQ(d.total, solve(bull, r, plain).total);
+
+    std::mt19937_64 rng(5'170'000);
+    int grouped = 0;
+    for (int k = 0; k < 1500; ++k) {
+        Portfolio p = dp_book(rng, 2 + k % 13, k % 2 ? 3 : 6);
+        if (p.options.empty()) continue;
+        RuleSet rr = gen::rules(rng, ExpiryRule::pairwise);
+        Solution a = solve_strike_dp(p, rr), b = solve(p, rr, plain);
+        CHECK(a.status == MipStatus::optimal);
+        CHECK_EQ(a.total, b.total);
+        grouped += !a.structures.empty();
+    }
+    CHECK(grouped > 500);
+
+    // Outside the scope it refuses rather than answering a different question.
+    Portfolio two = bull;
+    two.options[1].option.expiry = Date{2027, 1, 15};
+    CHECK_THROWS(solve_strike_dp(two, r));
+    DpOptions tiny;
+    tiny.state_limit = 0;
+    CHECK(solve_strike_dp(bull, r, tiny).status == MipStatus::node_limit);
+}
+
 }  // namespace
 
 int run_solver_tests() {
@@ -366,6 +418,7 @@ int run_solver_tests() {
     run("hand_cases", hand_cases);
     run("greedy_baseline", greedy_baseline);
     run("compact_straddles", compact_straddles);
+    run("strike_dp", strike_dp);
     ::check::context().clear();
     return groups;
 }

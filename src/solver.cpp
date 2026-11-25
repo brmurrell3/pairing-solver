@@ -43,8 +43,9 @@ struct Builder {
     bool has_stock;
 
     std::int64_t compact_straddle_pairs;
-    Builder(const Portfolio& p_, const RuleSet& r_, std::int64_t lots_, std::int64_t compact)
-        : p(p_), r(r_), lots(lots_), compact_straddle_pairs(compact) {
+    bool straddles_on;
+    Builder(const Portfolio& p_, const RuleSet& r_, std::int64_t lots_, std::int64_t compact, bool straddles_)
+        : p(p_), r(r_), lots(lots_), compact_straddle_pairs(compact), straddles_on(straddles_) {
         n = static_cast<int>(p.options.size());
         has_stock = p.stock.shares != 0;
         m.lots_per_contract = lots;
@@ -112,7 +113,7 @@ struct Builder {
         const std::int64_t compact_pairs = compact_straddle_pairs;
         std::map<std::int64_t, std::vector<int>> by_size;
         for (int i = 0; i < n; ++i)
-            if (p.options[i].quantity < 0) by_size[std::llabs(leg(i, 1).units())].push_back(i);
+            if (straddles_on && p.options[i].quantity < 0) by_size[std::llabs(leg(i, 1).units())].push_back(i);
         std::set<std::int64_t> compact;
         for (const auto& [size, shorts] : by_size) {
             std::int64_t puts = 0, calls = 0;
@@ -122,7 +123,7 @@ struct Builder {
                 straddles(shorts);
             }
         }
-        for (int i = 0; i < n; ++i) {
+        for (int i = 0; i < n && straddles_on; ++i) {
             if (!is(i, OptionType::put, -1)) continue;
             for (int j = 0; j < n; ++j) {
                 if (!is(j, OptionType::call, -1)) continue;
@@ -432,7 +433,7 @@ struct Builder {
 
 Model build_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     if (o.lots_per_contract < 1) throw std::invalid_argument("lots per contract must be at least 1");
-    Builder b(p, r, o.lots_per_contract, o.compact_straddle_pairs);
+    Builder b(p, r, o.lots_per_contract, o.compact_straddle_pairs, o.straddles);
     b.capacities();
     b.templates();
     b.long_boxes();

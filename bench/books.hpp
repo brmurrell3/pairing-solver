@@ -149,6 +149,21 @@ inline Portfolio market_maker(std::mt19937_64& rng, int n) {
     return b.portfolio();
 }
 
+// One expiration (the June one), 100-share series on both sides, 1 to max_quantity
+// contracts each, no stock: the scope of solve_strike_dp.
+inline Portfolio one_expiry(std::mt19937_64& rng, int n, int max_quantity) {
+    Chain c = Chain::make(rng, 4);
+    Book b{c};
+    const int half = std::max(10, n / 4);
+    for (int tries = 0; static_cast<int>(b.legs.size()) < n && tries < 50 * n; ++tries) {
+        const OptionType t = chance(rng, 0.5) ? OptionType::call : OptionType::put;
+        const long k = c.atm() + c.step * pick(rng, -half, half);
+        if (k <= 0 || b.legs.count({static_cast<int>(t), k, 3, 100})) continue;
+        b.add(t, k, 3, pick(rng, 1, max_quantity) * (chance(rng, 0.5) ? 1 : -1));
+    }
+    return b.portfolio();
+}
+
 // Adjusted series: a retail book in which about a third of the series deliver 150 shares
 // (as after a 3-for-2 split) and some 10 (mini contracts).
 inline Portfolio adjusted(std::mt19937_64& rng) {

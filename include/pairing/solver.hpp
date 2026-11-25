@@ -33,6 +33,9 @@ struct SolveOptions {
     // class has more put-call pairs than this; otherwise one template per pair, which
     // branches faster on small books. Both give the same optimum.
     std::int64_t compact_straddle_pairs = 256;
+    // false: no short straddles (R6), a template policy (spec §3.3). The strike dynamic
+    // program does not model them, so its tests compare against the solver with them off.
+    bool straddles = true;
 };
 
 // A lot of a position as a Phase 1 leg: one lot of a contract delivering w units is an
@@ -108,6 +111,17 @@ Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o = {})
 // strikes first, two legs at a time, no revisiting. Only
 // lots_per_contract is read from o. Fills structures, residuals, total and all_standalone.
 Solution greedy(const Portfolio& p, const RuleSet& r, const SolveOptions& o = {});
+
+// Spec §3.4 item 2: dynamic program over the strikes, exact for whole contracts. Scope:
+// options only, of one style, listing, expiration and deliverable, without straddles (R6),
+// so the answer is one max-loss group plus standalone residuals; it matches solve() with
+// SolveOptions::straddles off. Throws std::invalid_argument outside that scope. A hit of
+// state_limit returns status node_limit with every position standalone. Solution::nodes
+// counts the states generated. Complexity: docs/proofs.md, "Strike dynamic program".
+struct DpOptions {
+    long state_limit = 5'000'000;
+};
+Solution solve_strike_dp(const Portfolio& p, const RuleSet& r, const DpOptions& o = {});
 
 // The independent checker. Re-derives every structure's validity and requirement and
 // every residual's requirement with the Phase 1 engine, checks that structures and

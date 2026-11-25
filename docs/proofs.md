@@ -259,4 +259,62 @@ pair. The `solver` test checks that both forms give the same exact optimum on 40
 books. Branching is slower on the compact form for small books (the 1,000-case HiGHS test
 took 40 s against 18 s), so it applies only to classes with more than 256 pairs
 (`SolveOptions::compact_straddle_pairs`). A 1,000-series market-maker book went from
-58,601 to 1,765 columns and from 153 s to 17.7 s.
+58,601 to 1,765 columns and from 153 s to 18.0 s.
+
+## Strike dynamic program (plan Phase 4)
+
+**Scope.** One max-loss group and standalone residuals: options of one style, listing,
+expiration and deliverable `w`, no stock, no straddles. With one expiration the suffix rows
+of item 4 are empty and, by item 2, one group per class is enough. `solve_strike_dp` in
+`src/dp.cpp` implements it.
+
+**Objective.** Choose signed contracts `x_i` in the group, between zero and the holding.
+A short in the group gives up its standalone requirement `U_i`; a long pays its market
+value instead of its standalone requirement (the loan value of a long beyond nine months is
+lost, Q3). With `δ_i` the per-contract change, the total is the all-standalone total plus
+`Σ δ_i |x_i| + max(0, −min_k P_k)`, subject to call and put balance.
+
+**Walk in one pass.** Sort the strikes `K_1 < … < K_m`, let `C_j` and `P'_j` be the
+cumulative call and put units through strike `j`, and `Δ_j = K_{j+1} − K_j`. Summation by
+parts on item 5's `Q_0`, using `P'_m = 0`, gives `Q_0 = −Σ_{j<m} P'_j Δ_j`. So
+
+    P_k = Σ_{j<k} C_j Δ_j − Σ_{j≥k} P'_j Δ_j:
+
+the calls to the left of `k` and the puts to its right. The second sum depends on choices
+not yet made, so the DP carries, after strike `k`,
+
+    Y_k = Σ_{j<k} C_j Δ_j,    X_k = min_{i≤k} P_i + Σ_{j≥k} P'_j Δ_j.
+
+Both start at 0 and update as `Y_{k+1} = Y_k + C_k Δ_k` and
+`X_{k+1} = min(X_k − P'_k Δ_k, Y_{k+1})`, since `P_{k+1} + Σ_{j≥k+1} P'_j Δ_j = Y_{k+1}`. At
+the last strike the put tail is empty, so `X_m = min_k P_k`.
+
+**Dominance.** For states with the same `(C, P')`, the future updates are nondecreasing in
+`X` and `Y`, and the final cost `cost + max(0, −X_m)` is nondecreasing in cost and
+nonincreasing in `X_m`. So a state with no lower cost and no higher `X` and `Y` than another
+can be dropped, and each `(C, P')` keeps a Pareto front in (cost, `X`, `Y`). States that can
+no longer reach `C = P' = 0` with the remaining holdings are dropped, and so are states whose
+cost plus the most the remaining shorts can save, plus `max(0, −X)` (`X` never rises), is
+not below the incumbent. The program is exact for whole contracts: every balanced choice is
+some path, and dominance and the bound remove only paths that cannot be better.
+
+**Complexity.** Let `N_c` and `N_p` be the total call and put contracts held, `w` the
+deliverable and `τ` the strike tick. `X` and `Y` are multiples of `wτ` with magnitude at
+most `(N_c + N_p) w (K_m − K_1)`, so each takes at most `R = 2(N_c + N_p)(K_m − K_1)/τ + 1`
+values. Each layer has at most `(2N_c + 1)(2N_p + 1)` keys, and a front keeps at most the
+cheapest state for each (`X`, `Y`) pair, so at most `R²` states. Strike `k` fans each state
+out to at most `(q + 1)²` choices, with `q` the largest holding. The total is
+`O(m · N_c N_p · R² · q²)` states generated: pseudo-polynomial in contracts and in the strike range over the tick,
+not polynomial in the input size. Whether this one-group problem is NP-hard is still open;
+the integrality counterexamples above show it is not a network problem even with calls
+only.
+
+**Measured** (docs/benchmarks.md, "Strike dynamic program"). The `solver` test checks the
+DP against exact branch-and-bound with straddles off on 1,500 random books, all equal.
+Against branch-and-bound on the same books, the DP loses everywhere measured. At 10
+series of 1 to 5 contracts both take under a millisecond. At 10 series of 1 to 50
+contracts the DP's median is 82 ms against 0.09 ms, and at 100 series it reaches its
+5,000,000-state limit on every book, while exact branch-and-bound has a median of 9 to
+50 ms. The front grows with the payoff range, as the bound says, and the LP bound that
+lets branch-and-bound stop at the root has no counterpart here. The DP stays as an
+independent exact check that shares no code with the simplex.

@@ -182,6 +182,49 @@ void timing_table(const RuleSet& r) {
     std::cout << "\n";
 }
 
+// Plan Phase 4: the strike dynamic program against branch-and-bound on the books it
+// covers. Straddles are off in both, since the DP does not model them.
+void dp_table(const RuleSet& r) {
+    std::cout << "## Strike dynamic program\n\n"
+              << "One-expiration books of n 100-share series, both sides, no stock, straddles off. The DP is exact; "
+                 "branch-and-bound runs exact (`rel_gap` 0) and with the default 1%. The DP stops after generating 5,000,000 states, B&B at 200,000 nodes. "
+                 "Excess is over the exact optimum.\n\n"
+              << "| Series | Contracts per series | Books | DP: median | max | States generated (median) | DP stopped | B&B exact: "
+                 "median | max | B&B 1%: median | max | B&B 1% excess (max) |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n";
+    const int sizes[] = {10, 10, 30, 100, 100};
+    const int quantity[] = {5, 50, 5, 1, 5};
+    const int counts[] = {50, 20, 20, 10, 10};
+    for (int z = 0; z < 5; ++z) {
+        std::mt19937_64 rng(7'000 + 10 * sizes[z] + quantity[z]);
+        Stats dt, states, et, gt, excess;
+        int stopped = 0;
+        for (int k = 0; k < counts[z]; ++k) {
+            Portfolio p = books::one_expiry(rng, sizes[z], quantity[z]);
+            SolveOptions exact{1, 0}, fast;
+            exact.straddles = fast.straddles = false;
+            auto t0 = std::chrono::steady_clock::now();
+            Solution d = solve_strike_dp(p, r);
+            dt.add(seconds_since(t0));
+            states.add(d.nodes);
+            stopped += d.status != MipStatus::optimal;
+            t0 = std::chrono::steady_clock::now();
+            Solution e = solve(p, r, exact);
+            et.add(seconds_since(t0));
+            t0 = std::chrono::steady_clock::now();
+            Solution g = solve(p, r, fast);
+            gt.add(seconds_since(t0));
+            if (d.status == MipStatus::optimal && e.status == MipStatus::optimal && d.total != e.total) std::cerr << "dp and b&b disagree\n";
+            double opt = dollars(e.total);
+            excess.add(opt > 0 ? (dollars(g.total) - opt) / opt : 0);
+        }
+        std::cout << "| " << sizes[z] << " | 1-" << quantity[z] << " | " << counts[z] << " | " << ms(dt.quantile(0.5))
+                  << " | " << ms(dt.max()) << " | " << num(states.quantile(0.5), 6) << " | " << stopped << " | "
+                  << ms(et.quantile(0.5)) << " | " << ms(et.max()) << " | " << ms(gt.quantile(0.5)) << " | "
+                  << ms(gt.max()) << " | " << pct(excess.max()) << " |\n";
+    }
+    std::cout << "\n";
+}
+
 void batch_table(const RuleSet& r) {
     std::cout << "## Batch throughput\n\n"
               << "Accounts that hold the same series in different sizes share the model's matrix and costs; only bounds "
@@ -282,6 +325,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "integrality") integrality_table(r);
     if (only.empty() || only == "timing") timing_table(r);
     if (only.empty() || only == "batch") batch_table(r);
+    if (only.empty() || only == "dp") dp_table(r);
 #ifdef PAIRING_BENCH_HIGHS
     if (only.empty() || only == "highs") highs_table(r);
 #else

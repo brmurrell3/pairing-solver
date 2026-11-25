@@ -49,6 +49,18 @@ Accounts that hold the same series in different sizes share the model's matrix a
 
 Batches use the defaults (`rel_gap` 1%, 200,000 nodes). Warm starts change only the root LP; branch-and-bound nodes start from their own bases either way.
 
+## Strike dynamic program
+
+One-expiration books of n 100-share series, both sides, no stock, straddles off. The DP is exact; branch-and-bound runs exact (`rel_gap` 0) and with the default 1%. The DP stops after generating 5,000,000 states, B&B at 200,000 nodes. Excess is over the exact optimum.
+
+| Series | Contracts per series | Books | DP: median | max | States generated (median) | DP stopped | B&B exact: median | max | B&B 1%: median | max | B&B 1% excess (max) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 10 | 1-5 | 50 | 0.10 ms | 0.72 ms | 686 | 0 | 0.05 ms | 0.15 ms | 0.03 ms | 0.12 ms | 0.96% |
+| 10 | 1-50 | 20 | 82.05 ms | 1.19 s | 542824 | 5 | 0.09 ms | 0.15 ms | 0.04 ms | 0.05 ms | 0.00% |
+| 30 | 1-5 | 20 | 571.26 ms | 4.30 s | 1482414 | 5 | 0.32 ms | 2.13 ms | 0.20 ms | 0.46 ms | 0.00% |
+| 100 | 1-1 | 10 | 8.58 s | 12.39 s | 5000003 | 10 | 50.08 ms | 4.11 s | 6.11 ms | 22.18 ms | 0.84% |
+| 100 | 1-5 | 10 | 2.58 s | 4.74 s | 5000006 | 10 | 9.13 ms | 33.12 s | 4.93 ms | 14.50 ms | 0.18% |
+
 ## Against HiGHS
 
 The same models handed to HiGHS 1.16 (one thread, `mip_rel_gap = 0`, a 120 s limit per model). The solver runs with its defaults and a budget of 3,000 nodes. Above HiGHS is the solver's requirement over HiGHS's optimum.
