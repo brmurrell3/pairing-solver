@@ -9,6 +9,7 @@
 #include <numeric>
 #include <set>
 #include <stdexcept>
+#include <string>
 
 #include "pairing/solver.hpp"
 
@@ -260,6 +261,48 @@ struct Builder {
             m.integer.push_back(true);
             m.column.push_back({Model::Column::member, h, i});
         }
+        aggregates(candidates);
+    }
+
+    // With mixed deliverables (100, 150 and 10 shares, or lots of them) the balance rows have
+    // unequal coefficients, and whole-lot balance needs congruences the LP cannot see. A
+    // type's balance is the sum over share sizes u of u·N_u = 0, N_u being the net lots
+    // (long less short) of that size, so u·N_u ≡ 0 modulo g, the gcd of the other sizes:
+    // N_u is a multiple of k_u = g / gcd(u, g). Against 100-share calls, net 150-share calls
+    // come in pairs, and against 150-share calls net 100-share calls come in threes.
+    // Branching on single members reaches such an infeasibility only at the bottom of deep
+    // subtrees, so each size gets an integer column M_u with N_u = k_u·M_u, branched on
+    // first. The congruence holds for every whole-lot solution, so no solution is lost.
+    // (A full lattice basis of the balance row, which makes every integer choice balance,
+    // was tried and was 2.8 times slower on the 1,000-case test: its columns are dense.)
+    void aggregates(const std::vector<int>& candidates) {
+        const int first = static_cast<int>(m.column.size()) - static_cast<int>(candidates.size());
+        for (OptionType t : {OptionType::call, OptionType::put}) {
+            std::map<std::int64_t, std::vector<std::pair<int, double>>> by;  // |units| -> (member column, ±1)
+            for (std::size_t c = 0; c < candidates.size(); ++c) {
+                const int i = candidates[c];
+                if (p.options[i].option.type != t) continue;
+                by[std::llabs(leg(i, 1).units())].push_back({first + static_cast<int>(c), p.options[i].quantity > 0 ? 1.0 : -1.0});
+            }
+            if (by.size() < 2) continue;
+            for (const auto& [u, cols] : by) {
+                std::int64_t g = 0;
+                for (const auto& other : by)
+                    if (other.first != u) g = std::gcd(g, other.first);
+                const std::int64_t k = g / std::gcd(u, g);
+                if (k == 1 && cols.size() < 2) continue;  // a lone member is already an integer column
+                int row = m.lp.add_row(0, 0);
+                double lo = 0, up = 0;
+                for (auto [col, sign] : cols) {
+                    m.lp.columns[col].push_back({row, sign});
+                    (sign > 0 ? up : lo) += sign * m.lp.col_up[col];
+                }
+                const double kd = static_cast<double>(k);
+                m.lp.add_column(0, std::ceil(lo / kd), std::floor(up / kd), {{row, -kd}});
+                m.integer.push_back(true);
+                m.column.push_back({Model::Column::aggregate, m.groups - 1});
+            }
+        }
     }
 
     // Spec §3.1 item 2: one group per (style, listing) class under the pairwise reading; one
@@ -300,6 +343,7 @@ Model build_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     b.templates();
     b.long_boxes();
     b.groups();
+    for (const auto& c : b.m.column) b.m.priority.push_back(c.kind == Model::Column::aggregate ? 1 : 0);
     return std::move(b.m);
 }
 
@@ -311,7 +355,7 @@ Solution read_solution(const Model& m, const Portfolio& p, const std::vector<dou
     std::vector<std::vector<StructureLeg>> spreads(m.groups);
     for (int j = 0; j < m.lp.cols(); ++j) {
         const auto& c = m.column[j];
-        if (c.kind == Model::Column::loss) continue;
+        if (c.kind == Model::Column::loss || c.kind == Model::Column::aggregate) continue;
         std::int64_t v = std::llround(x[j]);
         if (std::fabs(x[j] - static_cast<double>(v)) > 1e-6) throw std::logic_error("solution is not on the grid");
         if (v <= 0) continue;
@@ -344,8 +388,16 @@ Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     // Integer assignments cost whole micro-dollars, so a node that cannot beat the
     // incumbent by half of one cannot beat it at all; the relative term absorbs LP rounding.
     double scale = std::fabs(dollars(m.constant));
-    MipSolution mip = branch_and_bound(m.lp, m.integer, 0.5e-6 + 1e-12 * scale);
-    if (mip.status != LpStatus::optimal) throw std::runtime_error("the subproblem did not solve");
+    MipOptions mo;
+    mo.abs_tol = 0.5e-6 + 1e-12 * scale;
+    mo.rel_gap = o.rel_gap;
+    mo.offset = dollars(m.constant);
+    mo.node_limit = o.node_limit;
+    mo.start.assign(m.lp.cols(), 0.0);  // everything standalone is always feasible
+    mo.priority = m.priority;
+    MipSolution mip = branch_and_bound(m.lp, m.integer, mo);
+    if (mip.status != MipStatus::optimal && mip.status != MipStatus::node_limit)
+        throw std::runtime_error(std::string("the subproblem did not solve: ") + status_name(mip.status));
 
     Solution s = read_solution(m, p, mip.x);
     s.total = check_solution(p, r, s);
@@ -356,9 +408,20 @@ Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     s.lp_objective = constant + mip.objective;
     s.lp_bound = constant + mip.root.objective;
     double total = dollars(s.total);
-    if (std::fabs(s.lp_objective - total) > 1e-9 * std::max(1.0, std::fabs(total)))
-        throw std::logic_error("the model's objective disagrees with the checker's total");
+    // The model prices a group at its maximum loss; Phase 1 prices a spread at the lesser
+    // of that and its shorts' uncovered requirement (R2). They agree wherever pairing pays,
+    // so always at the optimum, but an assignment accepted within the gap can hold a group
+    // that Phase 1 prices lower. The checker's total is the one reported; the model's can
+    // never be below it.
+    if (total > s.lp_objective + 1e-9 * std::max(1.0, std::fabs(total)) ||
+        (o.rel_gap == 0 && mip.status == MipStatus::optimal &&
+         s.lp_objective - total > 1e-9 * std::max(1.0, std::fabs(total))))
+        throw std::logic_error("the model's objective " + std::to_string(s.lp_objective) +
+                               " disagrees with the checker's total " + std::to_string(total));
     s.gap = total > 0 ? (total - s.lp_bound) / total : 0;
+    s.status = mip.status;
+    s.bound = std::max(s.lp_bound, constant + mip.bound);
+    s.proven_gap = total > 0 ? std::max(0.0, (total - s.bound) / total) : 0;
 
     s.lp_integral = true;
     for (int j = 0; j < m.lp.cols(); ++j)

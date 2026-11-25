@@ -8,3 +8,4 @@ data/private/
 target/
 build/
 .DS_Store
+build-*/

@@ -15,7 +15,8 @@
 namespace gen {
 
 struct Shape {
-    int max_series = 7;      // option positions; the count is drawn from 1..max_series
+    int max_series = 7;      // option positions; the count is drawn from min_series..max_series
+    int min_series = 1;
     int max_quantity = 3;    // contracts per position
     int max_stock_lots = 3;  // stock in hundreds of shares; 0 for none
     int expiries = 3;        // drawn from six dates, two of them beyond nine months
@@ -44,7 +45,7 @@ inline pairing::Portfolio portfolio(std::mt19937_64& rng, const Shape& s) {
     std::shuffle(dates.begin(), dates.end(), rng);
     dates.resize(std::min<std::size_t>(s.expiries, dates.size()));
 
-    int series = uniform(1, s.max_series);
+    int series = uniform(std::min(s.min_series, s.max_series), s.max_series);
     std::set<std::tuple<int, long, Date, std::int64_t, int, int>> seen;
     for (int tries = 0; static_cast<int>(p.options.size()) < series && tries < 50 * series; ++tries) {
         OptionLeg l;

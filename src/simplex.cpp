@@ -1,8 +1,8 @@
 #include "pairing/simplex.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -188,14 +188,14 @@ void DualSimplex::compute_dual() {
 
 // Every variable is boxed or carries an artificial bound, so a wrong-signed reduced cost
 // is fixed by moving the variable to its other bound.
-bool DualSimplex::restore_dual_feasibility() {
+bool DualSimplex::restore_dual_feasibility(double tol) {
     bool flipped = false;
     for (int j = 0; j < n_ + m_; ++j) {
         if (state_[j] == basic || lo_[j] == up_[j]) continue;
-        if (state_[j] == at_lower && d_[j] < -dual_tol) {
+        if (state_[j] == at_lower && d_[j] < -tol) {
             state_[j] = at_upper;
             flipped = true;
-        } else if (state_[j] == at_upper && d_[j] > dual_tol) {
+        } else if (state_[j] == at_upper && d_[j] > tol) {
             state_[j] = at_lower;
             flipped = true;
         }
@@ -212,6 +212,14 @@ int DualSimplex::choose_row(bool bland) const {
         if (x_[j] < lo_[j] - primal_tol * (1 + std::fabs(lo_[j]))) v = lo_[j] - x_[j];
         else if (x_[j] > up_[j] + primal_tol * (1 + std::fabs(up_[j]))) v = x_[j] - up_[j];
         if (v <= 0) continue;
+        if (!bland) {
+            // Dual steepest edge: the violation over the norm of B⁻¹'s row, the step's
+            // length in dual space; the dense inverse gives the norm exactly.
+            const double* rho = &binv_[static_cast<std::size_t>(k) * m_];
+            double norm = 0;
+            for (int c = 0; c < m_; ++c) norm += rho[c] * rho[c];
+            v = v * v / std::max(norm, 1e-12);
+        }
         if (bland ? (best < 0 || j < head_[best]) : v > best_v) {
             best = k;
             best_v = v;
@@ -248,10 +256,33 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
     if (!start.empty() && (start.head != head_ || start.state != state_)) load(start);
     compute_primal();
     compute_dual();
-    if (restore_dual_feasibility()) compute_primal();
+    if (restore_dual_feasibility(dual_tol)) compute_primal();
 
     int iterations = 0, degenerate = 0, checks = 0;
     bool bland = false;
+    // The dual objective (cost·x at the current basis) should rise. Steps that pass the
+    // degeneracy test but are undone by refactorization and bound flips can cycle with no
+    // net progress; after that many steps without a rise, Bland's rule stays on.
+    bool stuck = false;
+    long since_rise = 0;
+    double best_objective = -lp_infinity;
+    // When that happens, the costs are perturbed instead: each nonbasic variable's cost
+    // moves a little further in the direction that keeps its reduced cost correctly signed,
+    // which breaks the ties that let the steps cycle. At the perturbed optimum the true
+    // costs come back and the solve continues from that basis.
+    std::vector<double> true_cost;
+    int perturbations = 0;
+    auto unperturb = [&] {
+        if (true_cost.empty()) return false;
+        cost_ = std::move(true_cost);
+        true_cost.clear();
+        compute_dual();
+        if (restore_dual_feasibility(dual_tol)) compute_primal();
+        stuck = bland = false;
+        since_rise = 0;
+        best_objective = -lp_infinity;
+        return true;
+    };
     std::vector<double> w(m_);
     while (iterations < max_iterations) {
         int r = choose_row(bland);
@@ -261,9 +292,14 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
             refactor();
             compute_primal();
             compute_dual();
-            bool flipped = restore_dual_feasibility();
+            // Each refactorization moves reduced costs near zero by rounding noise of about
+            // dual_tol, and two such columns can flip each other's bound forever. A widening
+            // threshold on repeated checks ends that; it costs at most 100·dual_tol per unit
+            // of a column's range in the objective.
+            bool flipped = restore_dual_feasibility(checks > 10 ? 100 * dual_tol : checks > 1 ? 10 * dual_tol : dual_tol);
             if (flipped) compute_primal();
             if (flipped || choose_row(false) >= 0) continue;
+            if (unperturb()) continue;
             for (int j = 0; j < n_; ++j)
                 if (std::fabs(x_[j]) >= artificial_bound / 2) return finish(LpStatus::unbounded, iterations);
             return finish(LpStatus::optimal, iterations);
@@ -314,9 +350,10 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
                 refactor();
                 compute_primal();
                 compute_dual();
-                if (restore_dual_feasibility()) compute_primal();
+                if (restore_dual_feasibility(dual_tol)) compute_primal();
                 continue;
             }
+            unperturb();
             return finish(LpStatus::infeasible, iterations);
         }
 
@@ -327,7 +364,7 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
             refactor();
             compute_primal();
             compute_dual();
-            if (restore_dual_feasibility()) compute_primal();
+            if (restore_dual_feasibility(dual_tol)) compute_primal();
             continue;
         }
 
@@ -361,92 +398,305 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
             refactor();
             compute_primal();
             compute_dual();
-            if (restore_dual_feasibility()) compute_primal();
+            if (restore_dual_feasibility(dual_tol)) compute_primal();
         }
         // The dual objective rises by theta times the violation removed.
-        if (theta * std::fabs(xp - target) > 1e-12) {
+        if (!stuck) {
+            double objective = 0;
+            for (int j = 0; j < n_; ++j) objective += cost_[j] * x_[j];
+            if (objective > best_objective + 1e-9 * (1 + std::fabs(objective))) {
+                best_objective = objective;
+                since_rise = 0;
+            } else if (++since_rise > 10L * (m_ + n_)) {
+                if (true_cost.empty() && perturbations < 3) {
+                    ++perturbations;
+                    true_cost = cost_;
+                    std::uint64_t seed = 0x9e3779b97f4a7c15ULL * static_cast<std::uint64_t>(perturbations);
+                    for (int j = 0; j < n_ + m_; ++j) {
+                        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+                        double u = 0.5 + 0.5 * static_cast<double>(seed >> 11) / 9007199254740992.0;
+                        double delta = 1e-7 * u * (1 + std::fabs(cost_[j]));
+                        if (state_[j] == at_upper) cost_[j] -= delta;
+                        else if (state_[j] == at_lower) cost_[j] += delta;
+                    }
+                    compute_dual();
+                    if (restore_dual_feasibility(dual_tol)) compute_primal();
+                    since_rise = 0;
+                    best_objective = -lp_infinity;
+                } else {
+                    stuck = bland = true;
+                }
+            }
+        }
+        if (stuck) {
+            bland = true;
+        } else if (theta * std::fabs(xp - target) > 1e-12) {
             degenerate = 0;
             bland = false;
         } else if (++degenerate > stall_limit) {
             bland = true;
         }
     }
+    unperturb();
     return finish(LpStatus::iteration_limit, iterations);
 }
 
-MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, double prune_tol) {
+const char* status_name(MipStatus s) {
+    switch (s) {
+        case MipStatus::optimal: return "optimal";
+        case MipStatus::node_limit: return "node_limit";
+        case MipStatus::infeasible: return "infeasible";
+        case MipStatus::unbounded: return "unbounded";
+        case MipStatus::lp_failed: return "lp_failed";
+    }
+    return "?";
+}
+
+namespace {
+
+// A rounding dive from a node's LP solution: fix the integer column nearest an integer to
+// that integer, re-solve from the current basis, and repeat until the solution is on the
+// grid. A fix that makes the LP infeasible is tried on the other side; when both fail, the
+// dive backtracks to earlier fixes' other sides, within a budget. Fixing one count of a
+// linked set (the share-size aggregates of one balance row) can leave the last one no
+// integer value, which only an earlier choice can repair. Restores the bounds.
+bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, const std::vector<int>& priority,
+          const std::vector<double>* guide, LpSolution sol, double integer_tol, long& iterations, std::vector<double>& x,
+          double& objective) {
+    struct Fix {
+        int col;
+        double lo, up;  // the bounds before the fix
+        double other;   // the side not yet tried, or NaN
+        LpBasis basis;  // the basis before the fix
+    };
+    std::vector<Fix> fixes;
+    int backtracks = 20;
+    bool found = false;
+    // Tries t for column j from basis b; on success the dive continues from the result.
+    auto attempt = [&](int j, double t, const LpBasis& b) {
+        if (t < simplex.lower(j) - 1e-9 || t > simplex.upper(j) + 1e-9) return false;
+        simplex.set_bounds(j, t, t);
+        LpSolution next = simplex.solve(b);
+        iterations += next.iterations;
+        if (next.status != LpStatus::optimal) return false;
+        sol = std::move(next);
+        return true;
+    };
+    for (long steps = 0; steps <= 4L * lp.cols() + 100; ++steps) {
+        int pick = -1, level = 0;
+        double nearest = 1;
+        for (int j = 0; j < lp.cols(); ++j) {
+            if (!integer[j]) continue;
+            double f = sol.x[j] - std::floor(sol.x[j]);
+            double d = std::min(f, 1 - f);
+            if (d <= integer_tol) continue;
+            int pr = priority.empty() ? 0 : priority[j];
+            if (pick < 0 || pr > level || (pr == level && d < nearest)) {
+                nearest = d;
+                pick = j;
+                level = pr;
+            }
+        }
+        if (pick < 0) {
+            found = true;
+            x = sol.x;
+            objective = sol.objective;
+            break;
+        }
+        const double v = sol.x[pick], lo = simplex.lower(pick), up = simplex.upper(pick);
+        // Guided by an incumbent, the dive rounds toward it where it can, searching near a
+        // known good solution; otherwise toward the nearer integer.
+        double first = std::round(v);
+        if (guide && ((*guide)[pick] == std::floor(v) || (*guide)[pick] == std::ceil(v))) first = (*guide)[pick];
+        double second = first > v ? std::floor(v) : std::ceil(v);
+        if (first < lo || first > up) std::swap(first, second);
+        fixes.push_back({pick, lo, up, (second < lo || second > up) ? std::nan("") : second, sol.basis});
+        if (first >= lo && first <= up && attempt(pick, first, fixes.back().basis)) continue;
+        // Undo fixes, newest first, until one has an untried side that solves.
+        bool resumed = false;
+        while (!fixes.empty() && !resumed) {
+            Fix& f = fixes.back();
+            if (!std::isnan(f.other) && backtracks-- > 0) {
+                double t = f.other;
+                f.other = std::nan("");
+                if (attempt(f.col, t, f.basis)) {
+                    resumed = true;
+                    break;
+                }
+            }
+            simplex.set_bounds(f.col, f.lo, f.up);
+            fixes.pop_back();
+            if (backtracks <= 0) break;
+        }
+        if (!resumed) break;
+    }
+    for (auto it = fixes.rbegin(); it != fixes.rend(); ++it) simplex.set_bounds(it->col, it->lo, it->up);
+    return found;
+}
+
+}  // namespace
+
+MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, const MipOptions& o) {
     // Values this close to an integer count as integral; callers round them.
     constexpr double integer_tol = 1e-6;
+    // A node is its bound changes from the root. Any basis stays dual feasible when only
+    // bounds change, so a node re-solves from whatever basis the simplex holds.
+    struct Change {
+        int col;
+        double lo, up;
+    };
     struct Node {
-        std::vector<double> lo, up;
-        LpBasis basis;
+        std::vector<Change> changes;
         double bound;
     };
+    auto worse = [](const Node& a, const Node& b) { return a.bound > b.bound; };
+    std::vector<Node> heap;  // open nodes, best bound on top
+
     DualSimplex simplex(lp);
     MipSolution out;
     double incumbent = lp_infinity;
-    std::vector<Node> stack;
-    stack.push_back({lp.col_lo, lp.col_up, {}, -lp_infinity});
-    bool root = true;
-    while (!stack.empty()) {
-        Node node = std::move(stack.back());
-        stack.pop_back();
-        if (node.bound >= incumbent - prune_tol) continue;
+    if (!o.start.empty()) {
+        incumbent = 0;
+        for (int j = 0; j < lp.cols(); ++j) incumbent += lp.cost[j] * o.start[j];
+        out.x = o.start;
+    }
+    // A node is pruned when its bound b cannot beat the incumbent by more than the gap,
+    // measured against offset + b: the gap is then relative to the optimum, not to the
+    // incumbent. pruned_bound is the lowest bound pruned, a proven bound on the optimum.
+    double pruned_bound = lp_infinity;
+    auto prune = [&](double b) {
+        if (b == -lp_infinity || incumbent == lp_infinity) return false;
+        if (b < incumbent - std::max(o.abs_tol, o.rel_gap * std::fabs(o.offset + b))) return false;
+        pruned_bound = std::min(pruned_bound, b);
+        return true;
+    };
+    auto pick_branch = [&](const LpSolution& sol) {
+        int branch = -1, level = 0;
+        double most = 0;
+        for (int j = 0; j < lp.cols(); ++j) {
+            if (!integer[j]) continue;
+            double f = sol.x[j] - std::floor(sol.x[j]);
+            double frac = std::min(f, 1 - f);
+            if (frac <= integer_tol) continue;
+            int pr = o.priority.empty() ? 0 : o.priority[j];
+            if (branch < 0 || pr > level || (pr == level && frac > most)) {
+                most = frac;
+                branch = j;
+                level = pr;
+            }
+        }
+        return branch;
+    };
+    std::vector<double> lo(lp.col_lo), up(lp.col_up);
+    auto load = [&](const std::vector<Change>& changes) {
+        for (int j = 0; j < lp.cols(); ++j) {
+            lo[j] = lp.col_lo[j];
+            up[j] = lp.col_up[j];
+        }
+        for (const auto& c : changes) {
+            lo[c.col] = c.lo;
+            up[c.col] = c.up;
+        }
         for (int j = 0; j < lp.cols(); ++j)
-            if (integer[j]) simplex.set_bounds(j, node.lo[j], node.up[j]);
-        LpSolution sol = simplex.solve(node.basis);
-        if (std::getenv("BB_TRACE")) { std::fprintf(stderr, "node %d status %d obj %.6f it %d stack %zu\n", out.nodes, (int)sol.status, sol.objective, sol.iterations, stack.size()); }
+            if (integer[j]) simplex.set_bounds(j, lo[j], up[j]);
+    };
+
+    // Best-first search with plunging: after a branch the nearer child is solved at once
+    // (depth-first, which finds incumbents), the other waits in the heap; when a plunge
+    // ends, the open node with the lowest bound is next (which raises the proven bound).
+    Node current{{}, -lp_infinity};
+    bool have_current = true, root = true;
+    bool searched = false;  // the incumbent came from the search, not from o.start
+    for (;;) {
+        if (!have_current) {
+            while (!heap.empty() && prune(heap.front().bound)) {
+                std::pop_heap(heap.begin(), heap.end(), worse);
+                heap.pop_back();
+            }
+            if (heap.empty()) break;
+            std::pop_heap(heap.begin(), heap.end(), worse);
+            current = std::move(heap.back());
+            heap.pop_back();
+            have_current = true;
+        }
+        if (out.nodes >= o.node_limit) {
+            double bound = std::min(incumbent, current.bound);
+            for (const auto& n : heap) bound = std::min(bound, n.bound);
+            out.status = MipStatus::node_limit;
+            out.objective = incumbent;
+            out.bound = bound;
+            return out;
+        }
+        have_current = false;
+        if (prune(current.bound)) continue;
+        load(current.changes);
+        LpSolution sol = simplex.solve();
         ++out.nodes;
         out.iterations += sol.iterations;
         if (root) {
             out.root = sol;
             root = false;
-            if (sol.status != LpStatus::optimal) {
-                out.status = sol.status;
+            if (sol.status == LpStatus::infeasible || sol.status == LpStatus::unbounded) {
+                out.status = sol.status == LpStatus::infeasible ? MipStatus::infeasible : MipStatus::unbounded;
                 return out;
+            }
+            std::vector<double> x;
+            double obj = 0;
+            if (sol.status == LpStatus::optimal &&
+                dive(simplex, lp, integer, o.priority, nullptr, sol, integer_tol, out.iterations, x, obj) && obj < incumbent) {
+                incumbent = obj;
+                out.x = std::move(x);
+                searched = true;
             }
         }
         if (sol.status == LpStatus::infeasible) continue;
-        if (sol.status != LpStatus::optimal) throw std::runtime_error("branch-and-bound node LP did not solve");
-        if (sol.objective >= incumbent - prune_tol) continue;
-
-        int branch = -1;
-        double most = integer_tol;
-        for (int j = 0; j < lp.cols(); ++j) {
-            if (!integer[j]) continue;
-            double f = sol.x[j] - std::floor(sol.x[j]);
-            double frac = std::min(f, 1 - f);
-            if (frac > most) {
-                most = frac;
-                branch = j;
+        if (sol.status != LpStatus::optimal) {
+            out.status = MipStatus::lp_failed;
+            out.objective = incumbent;
+            return out;
+        }
+        if (prune(sol.objective)) continue;
+        // Dive again now and then: the incumbent, not the bound, is what usually stops a
+        // gap-limited search, and a dive from deep in the tree often improves it.
+        if (out.nodes % 64 == 0) {
+            std::vector<double> x;
+            double obj = 0;
+            if (dive(simplex, lp, integer, o.priority, searched ? &out.x : nullptr, sol, integer_tol, out.iterations, x,
+                     obj) &&
+                obj < incumbent) {
+                incumbent = obj;
+                out.x = std::move(x);
+                searched = true;
+                if (prune(sol.objective)) continue;
             }
         }
+
+        int branch = pick_branch(sol);
         if (branch < 0) {
             incumbent = sol.objective;
             out.x = sol.x;
+            searched = true;
             continue;
         }
-        double v = sol.x[branch];
-        if (std::getenv("BB_TRACE")) { std::fprintf(stderr, "  branch x%d = %.9f bounds [%g,%g]\n", branch, v, node.lo[branch], node.up[branch]); }
-        Node down{node.lo, node.up, sol.basis, sol.objective};
-        down.up[branch] = std::floor(v);
-        Node up{std::move(node.lo), std::move(node.up), sol.basis, sol.objective};
-        up.lo[branch] = std::ceil(v);
+        const double v = sol.x[branch];
+        Node down{current.changes, sol.objective};
+        down.changes.push_back({branch, lo[branch], std::floor(v)});
         // A fractional upper bound (a template limited by a holding) leaves one side empty.
-        bool up_empty = up.lo[branch] > up.up[branch];
-        // The side nearer the LP value is explored first, so it goes on the stack last.
-        if (up_empty) {
-            stack.push_back(std::move(down));
-        } else if (v - std::floor(v) < 0.5) {
-            stack.push_back(std::move(up));
-            stack.push_back(std::move(down));
-        } else {
-            stack.push_back(std::move(down));
-            stack.push_back(std::move(up));
+        const bool up_empty = std::ceil(v) > up[branch];
+        Node upper{std::move(current.changes), sol.objective};
+        upper.changes.push_back({branch, std::ceil(v), up[branch]});
+        Node* first = (up_empty || v - std::floor(v) < 0.5) ? &down : &upper;
+        Node* second = first == &down ? &upper : &down;
+        if (!(up_empty && second == &upper)) {
+            heap.push_back(std::move(*second));
+            std::push_heap(heap.begin(), heap.end(), worse);
         }
+        current = std::move(*first);
+        have_current = true;
     }
-    out.status = incumbent < lp_infinity ? LpStatus::optimal : LpStatus::infeasible;
+    out.status = incumbent < lp_infinity ? MipStatus::optimal : MipStatus::infeasible;
     out.objective = incumbent;
+    out.bound = std::min(incumbent, pruned_bound);
     return out;
 }
 

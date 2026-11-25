@@ -19,6 +19,7 @@ add_library(pairing
   src/simplex.cpp
   src/solver.cpp
   src/checker.cpp
+  src/greedy.cpp
 )
 target_include_directories(pairing PUBLIC include)
 target_link_libraries(pairing PRIVATE tomlplusplus::tomlplusplus)
@@ -51,7 +52,12 @@ if(highs_FOUND)
   add_executable(pairing_highs_tests tests/highs.cpp)
   target_link_libraries(pairing_highs_tests PRIVATE pairing highs::highs)
   target_compile_options(pairing_highs_tests PRIVATE -Wall -Wextra -Wpedantic)
-  add_test(NAME highs COMMAND pairing_highs_tests 10000)
+  # Phase 2 criteria (docs/plan.md): 1,000 portfolios of up to 40 series within 1% of HiGHS,
+  # and five large ones of 50 to 200 series within 1% and 30 s each. HiGHS is slow on two of
+  # the large ones (about 170 s), so that test takes about six minutes.
+  add_test(NAME highs COMMAND pairing_highs_tests 1000 40)
+  add_test(NAME highs_large COMMAND pairing_highs_tests large)
+  set_tests_properties(highs_large PROPERTIES TIMEOUT 900)
 else()
   message(STATUS "HiGHS not found: the differential test against it is skipped")
 endif()

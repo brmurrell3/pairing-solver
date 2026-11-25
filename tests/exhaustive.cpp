@@ -341,13 +341,12 @@ int run_exhaustive(int per_policy) {
             RuleSet r = gen::rules(rng, rule);
             ::check::context() = std::string(name) + " #" + std::to_string(k);
 
-            if (std::getenv("PAIRING_TRACE")) std::cerr << ::check::context() << "\n" << describe(p, r);
             auto t0 = std::chrono::steady_clock::now();
             Search search(p, r, st);
             st.states += search.states();
             Money expected = search.run();
             auto t1 = std::chrono::steady_clock::now();
-            Solution s = solve(p, r);
+            Solution s = solve(p, r, SolveOptions{1, 0});  // small cases stay exact
             auto t2 = std::chrono::steady_clock::now();
             st.seconds_search += std::chrono::duration<double>(t1 - t0).count();
             st.seconds_solve += std::chrono::duration<double>(t2 - t1).count();

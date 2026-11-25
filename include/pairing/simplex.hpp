@@ -74,24 +74,51 @@ private:
     void refactor();
     void compute_primal();
     void compute_dual();
-    bool restore_dual_feasibility();
+    bool restore_dual_feasibility(double tol);
     int choose_row(bool bland) const;
     void load(const LpBasis& b);
     LpSolution finish(LpStatus status, int iterations) const;
 };
 
+enum class MipStatus {
+    optimal,     // the incumbent is within the requested gap of the optimum
+    node_limit,  // stopped at the node limit; x holds the best incumbent, if any
+    infeasible,
+    unbounded,   // the continuous relaxation is unbounded
+    lp_failed,   // a node LP hit its iteration limit
+};
+const char* status_name(MipStatus s);
+
+struct MipOptions {
+    // A node is pruned when its bound is not below the incumbent by more than
+    // max(abs_tol, rel_gap * |offset + incumbent|). offset turns the LP objective into the
+    // quantity the gap is relative to (for margin: the all-standalone total).
+    double abs_tol = 1e-9;
+    double rel_gap = 0;
+    double offset = 0;
+    long node_limit = 1'000'000;
+    // A known feasible integer point (empty: none). Branch-and-bound starts with it as the
+    // incumbent, so the gap test can prune from the first node.
+    std::vector<double> start;
+    // Branching priority per column (empty: all equal). Fractional columns of the highest
+    // priority present are branched on, and fixed by the root dive, first.
+    std::vector<int> priority;
+};
+
 struct MipSolution {
-    LpStatus status = LpStatus::infeasible;
+    MipStatus status = MipStatus::infeasible;
     double objective = 0;
+    double bound = 0;  // proven lower bound on the optimum
     std::vector<double> x;
-    LpSolution root;  // the continuous relaxation
-    int nodes = 0;
+    LpSolution root;   // the continuous relaxation
+    long nodes = 0;
     long iterations = 0;
 };
 
-// Depth-first branch-and-bound over the integer columns. Each node warm-starts from its
-// parent's basis. A node is pruned when its bound is not below the incumbent by more than
-// prune_tol, so the result is optimal to within prune_tol.
-MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, double prune_tol);
+// Branch-and-bound over the integer columns: a rounding dive at the root for a first
+// incumbent, then best-first search with plunging. Nodes hold only their bound changes and
+// re-solve from the current basis. Every node is pruned or explored, so the result is
+// optimal to within the pruning tolerance unless the node limit stops the search first.
+MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, const MipOptions& o);
 
 }  // namespace pairing
