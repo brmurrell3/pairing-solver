@@ -1,0 +1,48 @@
+# Default rule set: FINRA Rule 4210 and the Cboe Margin Manual (2021-11-30), as catalogued
+# in docs/rules.md. These are the values the engine uses when a key is absent. Rates are
+# fractions (0.20 is 20%); money is in dollars.
+
+basis = "maintenance"              # initial (Regulation T, Cboe 10.3) or maintenance (FINRA 4210)
+expiry_rule = "pairwise"           # pairwise, nearest_long or same_expiry (rules.md R2a, Q2)
+european_calendars = "allowed"     # allowed or disallowed
+hedged_short_value = "exercise_price"  # exercise_price (manual's worked numbers) or market_value
+
+# R3: uncovered short options, (f)(2)(E)(i).
+[short_option.equity]
+percentage = 0.20
+minimum = 0.10
+
+[short_option.narrow_index]
+percentage = 0.20
+minimum = 0.10
+
+[short_option.broad_index]
+percentage = 0.15
+minimum = 0.10
+
+# R4: long options, (f)(2)(D).
+[long_option]
+months = 9
+beyond_months = 0.75
+
+# R9: stock. Initial from Regulation T as the manual applies it; maintenance from 4210(c).
+# Short requirements include 100% of the short market value.
+[stock]
+initial_long = 0.50
+initial_short = 1.50
+maintenance_long = 0.25
+short_low_price = 5.00
+short_low_per_share = 2.50
+short_low_percentage = 1.00
+short_per_share = 5.00
+short_percentage = 0.30
+
+# R8: hedged underlying minimums, (f)(2)(H)(v)a–d.
+[hedge]
+exercise_percentage = 0.10
+collar_call_percentage = 0.25
+
+# R2b: European-style long box, (f)(2)(H)(v)e.
+[long_box]
+margin_percentage = 0.50
+value_percentage = 1.00

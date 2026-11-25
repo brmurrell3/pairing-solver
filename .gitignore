@@ -1,0 +1,10 @@
+# Local copies of rule texts and papers; licenses forbid redistribution of some.
+refs/
+
+# Private market data or real portfolios.
+data/private/
+
+# Build output.
+target/
+build/
+.DS_Store

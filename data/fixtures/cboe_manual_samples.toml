@@ -1,0 +1,779 @@
+# Sample calculations from the Cboe Margin Manual (2021-11-30), transcribed as test cases.
+# Numbers are the manual's; layout and field names are ours. Cases already in
+# cboe_manual.toml (the maximum-loss examples, the short box and the long put butterfly)
+# are not repeated.
+#
+# Conventions (as cboe_manual.toml, plus):
+#   kind:        which engine function the case exercises; spread when absent
+#   basis:       initial or maintenance (default maintenance). The manual's option
+#                samples are computed at the time the position is established; with
+#                premium equal to market value the two bases agree for options.
+#   product:     equity (stock, ETF, ETN), narrow_index or broad_index; default equity
+#   style, listing: default american, listed
+#   leverage:    leveraged ETF factor, which scales the short-option percentages
+#   underlying:  price of the options' underlying (an index value for index options)
+#   as_of, expiry: the manual gives a month and the time to expiration; the years and
+#                days here are ours, chosen to match. Day-level dates matter only for
+#                the nine-month test on long options.
+#   reduced:     the leg is a reduced-value index option on index/reduced (XSP vs SPX);
+#                its strike and premium are as quoted, and the engine converts it to
+#                units of the full index
+#   stock legs:  type = "stock", qty in shares, price per share
+#   netted:      net intrinsic value at each distinct strike, in strike order
+#   requirement: the manual's "Margin Requirement"
+#   underlying_requirement: the manual's maintenance requirement on the stock leg of a
+#                hedged-underlying position
+#   short_proceeds: short sale proceeds that may be applied (short options and short stock)
+#   margin_call: the manual's "SMA Debit or Margin Call"
+#   box_margin:  the European long box's "Margin Requirement" (50% of the strike difference)
+#
+# A spread case with a requirement is checked as a spread when it is valid pairwise, and
+# as separately margined legs when it is not, as the manual does.
+
+# ---- Long Options: listed or OTC, 9 months or less until expiration -------------------
+
+[[case]]
+id = "long-call-6m"
+section = "Sample Calculations: Long Options, 9 months or less, first example"
+kind = "long_option"
+basis = "initial"
+underlying = 128.50
+as_of = "2021-06-15"
+legs = [{ side = "long", qty = 1, type = "call", expiry = "2021-12-17", strike = 125, premium = 5 }]
+requirement = 500.00
+margin_call = 500.00
+
+[[case]]
+id = "long-index-put-6m"
+section = "Sample Calculations: Long Options, 9 months or less, second example"
+kind = "long_option"
+basis = "initial"
+product = "broad_index"
+underlying = 433.35
+as_of = "2021-05-14"
+legs = [{ side = "long", qty = 1, type = "put", expiry = "2021-11-19", strike = 430, premium = 5.50 }]
+requirement = 550.00
+margin_call = 550.00
+
+# ---- Long Options: listed, more than 9 months until expiration -------------------------
+
+[[case]]
+id = "long-call-18m"
+section = "Sample Calculations: Long Options, listed, more than 9 months, first example"
+kind = "long_option"
+basis = "initial"
+underlying = 78
+as_of = "2021-06-15"
+legs = [{ side = "long", qty = 1, type = "call", expiry = "2022-12-16", strike = 80, premium = 12 }]
+requirement = 900.00
+margin_call = 900.00
+
+[[case]]
+id = "long-call-20m"
+section = "Sample Calculations: Long Options, listed, more than 9 months, second example"
+kind = "long_option"
+basis = "initial"
+product = "broad_index"
+underlying = 1290
+as_of = "2021-10-15"
+legs = [{ side = "long", qty = 1, type = "call", expiry = "2023-06-16", strike = 1325, premium = 16.80 }]
+requirement = 1260.00
+margin_call = 1260.00
+
+[[case]]
+id = "long-reduced-index-put-2y"
+section = "Sample Calculations: Long Options, listed, more than 9 months, reduced value index"
+kind = "long_option"
+basis = "initial"
+product = "broad_index"
+as_of = "2021-12-10"
+legs = [{ side = "long", qty = 1, type = "put", expiry = "2023-12-15", strike = 42.5, premium = 2 }]
+requirement = 150.00
+margin_call = 150.00
+
+# ---- Long Options: OTC, more than 9 months until expiration ----------------------------
+
+[[case]]
+id = "otc-long-call-itm"
+section = "Sample Calculations: Long Options, OTC, more than 9 months, first example"
+kind = "long_option"
+basis = "initial"
+listing = "otc"
+underlying = 79
+as_of = "2021-06-11"
+legs = [{ side = "long", qty = 1, type = "call", expiry = "2022-06-17", strike = 75, premium = 4.50 }]
+requirement = 350.00
+margin_call = 350.00
+
+[[case]]
+id = "otc-long-call-itm-2"
+section = "Sample Calculations: Long Options, OTC, more than 9 months, second example"
+kind = "long_option"
+basis = "initial"
+listing = "otc"
+underlying = 667.34
+as_of = "2021-06-11"
+legs = [{ side = "long", qty = 1, type = "call", expiry = "2022-06-17", strike = 665, premium = 11 }]
+requirement = 1041.50
+margin_call = 1041.50
+
+[[case]]
+id = "otc-long-call-otm"
+section = "Sample Calculations: Long Options, OTC, more than 9 months, continued"
+kind = "long_option"
+basis = "initial"
+listing = "otc"
+underlying = 663.50
+as_of = "2021-06-11"
+legs = [{ side = "long", qty = 1, type = "call", expiry = "2022-06-17", strike = 665, premium = 13 }]
+requirement = 1300.00
+margin_call = 1300.00
+
+# ---- Short Put -------------------------------------------------------------------------
+
+[[case]]
+id = "short-put-otm"
+section = "Sample Calculations: Short Put, equity, out-of-the-money"
+kind = "short_option"
+basis = "initial"
+underlying = 95
+legs = [{ side = "short", qty = 1, type = "put", expiry = "2021-09", strike = 80, premium = 2 }]
+requirement = 1000.00
+margin_call = 800.00
+
+[[case]]
+id = "short-put-itm"
+section = "Sample Calculations: Short Put, equity, in-the-money"
+kind = "short_option"
+basis = "initial"
+underlying = 19.50
+legs = [{ side = "short", qty = 1, type = "put", expiry = "2022-01", strike = 20, premium = 1.50 }]
+requirement = 540.00
+margin_call = 390.00
+
+[[case]]
+id = "short-put-leveraged-2x-otm"
+section = "Sample Calculations: Short Put, leveraged ETF tracking a narrow based index, 2.0x"
+kind = "short_option"
+basis = "initial"
+leverage = 2.0
+underlying = 970.00
+legs = [{ side = "short", qty = 1, type = "put", expiry = "2022-03", strike = 725, premium = 3.00 }]
+requirement = 14800.00
+margin_call = 14500.00
+
+[[case]]
+id = "short-put-leveraged-3x-itm"
+section = "Sample Calculations: Short Put, leveraged ETF tracking a narrow based index, 3.0x"
+kind = "short_option"
+basis = "initial"
+leverage = 3.0
+underlying = 390.70
+legs = [{ side = "short", qty = 1, type = "put", expiry = "2022-04", strike = 400, premium = 15.50 }]
+requirement = 24992.00
+margin_call = 23442.00
+
+[[case]]
+id = "short-index-put-otm-minimum"
+section = "Sample Calculations: Short Put, broad based index, first example"
+kind = "short_option"
+basis = "initial"
+product = "broad_index"
+underlying = 445.35
+legs = [{ side = "short", qty = 1, type = "put", expiry = "2021-10", strike = 410, premium = 0.10 }]
+requirement = 4110.00
+margin_call = 4100.00
+
+[[case]]
+id = "short-index-put-otm-basic"
+section = "Sample Calculations: Short Put, broad based index, second example"
+kind = "short_option"
+basis = "initial"
+product = "broad_index"
+underlying = 433.35
+legs = [{ side = "short", qty = 1, type = "put", expiry = "2021-12", strike = 430, premium = 7.80 }]
+requirement = 6945.25
+margin_call = 6165.25
+
+[[case]]
+id = "short-reduced-index-put-itm"
+section = "Sample Calculations: Short Put, reduced value broad based index"
+kind = "short_option"
+basis = "initial"
+product = "broad_index"
+underlying = 43.34
+legs = [{ side = "short", qty = 1, type = "put", expiry = "2023-12", strike = 45, premium = 2.85 }]
+requirement = 935.10
+margin_call = 650.10
+
+[[case]]
+id = "short-put-leveraged-broad-1.5x"
+section = "Sample Calculations: Short Put, leveraged ETF tracking a broad based index, 1.5x"
+kind = "short_option"
+basis = "initial"
+product = "broad_index"
+leverage = 1.5
+underlying = 460.00
+legs = [{ side = "short", qty = 1, type = "put", expiry = "2021-10", strike = 390, premium = 4.00 }]
+requirement = 6250.00
+margin_call = 5850.00
+
+# ---- Short Call ------------------------------------------------------------------------
+
+[[case]]
+id = "short-call-itm"
+section = "Sample Calculations: Short Call, equity, in-the-money"
+kind = "short_option"
+basis = "initial"
+underlying = 128.50
+legs = [{ side = "short", qty = 1, type = "call", expiry = "2021-11", strike = 120, premium = 8.40 }]
+requirement = 3410.00
+margin_call = 2570.00
+
+[[case]]
+id = "short-call-otm"
+section = "Sample Calculations: Short Call, equity, out-of-the-money"
+kind = "short_option"
+basis = "initial"
+underlying = 26.38
+legs = [{ side = "short", qty = 1, type = "call", expiry = "2022-02", strike = 30, premium = 0.05 }]
+requirement = 268.80
+margin_call = 263.80
+
+[[case]]
+id = "short-call-leveraged-2x-itm"
+section = "Sample Calculations: Short Call, leveraged ETF tracking a narrow based index, 2.0x"
+kind = "short_option"
+basis = "initial"
+leverage = 2.0
+underlying = 815.50
+legs = [{ side = "short", qty = 1, type = "call", expiry = "2021-12", strike = 810, premium = 10.10 }]
+requirement = 33630.00
+margin_call = 32620.00
+
+[[case]]
+id = "short-call-leveraged-1.5x-otm"
+section = "Sample Calculations: Short Call, leveraged ETF tracking a narrow based index, 1.5x"
+kind = "short_option"
+basis = "initial"
+leverage = 1.5
+underlying = 1050.30
+legs = [{ side = "short", qty = 1, type = "call", expiry = "2021-10", strike = 1250, premium = 2.00 }]
+requirement = 15954.50
+margin_call = 15754.50
+
+[[case]]
+id = "short-index-call-itm"
+section = "Sample Calculations: Short Call, broad based index, in-the-money"
+kind = "short_option"
+basis = "initial"
+product = "broad_index"
+underlying = 433.35
+legs = [{ side = "short", qty = 1, type = "call", expiry = "2021-11", strike = 430, premium = 8.70 }]
+requirement = 7370.25
+margin_call = 6500.25
+
+[[case]]
+id = "short-reduced-index-call-otm"
+section = "Sample Calculations: Short Call, reduced value broad based index, out-of-the-money"
+kind = "short_option"
+basis = "initial"
+product = "broad_index"
+underlying = 43.34
+legs = [{ side = "short", qty = 1, type = "call", expiry = "2022-12", strike = 45, premium = 1.35 }]
+requirement = 619.10
+margin_call = 484.10
+
+[[case]]
+id = "short-reduced-index-call-itm"
+section = "Sample Calculations: Short Call, reduced value broad based index, in-the-money"
+kind = "short_option"
+basis = "initial"
+product = "broad_index"
+underlying = 378.50
+legs = [{ side = "short", qty = 1, type = "call", expiry = "2023-12", strike = 370, premium = 12.85 }]
+requirement = 6962.50
+margin_call = 5677.50
+
+[[case]]
+id = "short-call-leveraged-broad-1.5x"
+section = "Sample Calculations: Short Call, leveraged ETF tracking a broad based index, 1.5x"
+kind = "short_option"
+basis = "initial"
+product = "broad_index"
+leverage = 1.5
+underlying = 410.00
+legs = [{ side = "short", qty = 1, type = "call", expiry = "2021-10", strike = 450, premium = 3.00 }]
+requirement = 6450.00     # printed as "$6.450.00"
+margin_call = 6150.00
+
+# ---- Put Spread ------------------------------------------------------------------------
+
+[[case]]
+id = "put-spread-no-loss"
+section = "Sample Calculations: Put Spread, first example"
+basis = "initial"
+underlying = 255
+legs = [
+  { side = "long",  qty = 1, type = "put", expiry = "2021-11", strike = 250, premium = 3 },
+  { side = "short", qty = 1, type = "put", expiry = "2021-11", strike = 240, premium = 0.95 },
+]
+netted = [1000, 0]
+max_loss = 0
+requirement = 300.00
+short_proceeds = 95.00
+margin_call = 205.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "index-put-spread"
+section = "Sample Calculations: Put Spread, index"
+basis = "initial"
+product = "broad_index"
+underlying = 433.35
+legs = [
+  { side = "long",  qty = 1, type = "put", expiry = "2021-12", strike = 425, premium = 6.40 },
+  { side = "short", qty = 1, type = "put", expiry = "2021-12", strike = 430, premium = 7.80 },
+]
+netted = [-500, 0]
+max_loss = 500
+requirement = 1140.00
+short_proceeds = 780.00
+margin_call = 360.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+# The long expires in 18 months yet is charged in full (200), not at 75% (150): a long
+# beyond nine months gives up its loan value inside a spread (rules.md Q3).
+[[case]]
+id = "reduced-index-put-spread-18m"
+section = "Sample Calculations: Put Spread, continued (reduced value index, 18 months)"
+basis = "initial"
+product = "broad_index"
+underlying = 43.34
+as_of = "2021-06-18"
+legs = [
+  { side = "long",  qty = 1, type = "put", expiry = "2022-12-16", strike = 42.5, premium = 2 },
+  { side = "short", qty = 1, type = "put", expiry = "2022-12-16", strike = 45, premium = 2.90 },
+]
+netted = [-250, 0]
+max_loss = 250
+requirement = 450.00
+short_proceeds = 290.00
+margin_call = 160.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+# Standard long against reduced-value shorts that expire later: not a spread, so each
+# side is margined on its own. The manual gives the long 5 months and the short 18; the
+# dates here give the short 20, which changes nothing.
+[[case]]
+id = "spx-put-vs-xsp-puts-short-later"
+section = "Sample Calculations: Put Spread, standard contract vs. reduced value contract"
+basis = "initial"
+product = "broad_index"
+underlying = 433.40
+as_of = "2021-04-16"
+legs = [
+  { side = "long",  qty = 1,  type = "put", expiry = "2021-09-17", strike = 430,  premium = 7.90 },
+  { side = "short", qty = 10, type = "put", expiry = "2022-12-16", strike = 42.5, premium = 2, reduced = 10 },
+]
+requirement = 8451.00
+short_proceeds = 2000.00
+margin_call = 6451.00
+valid = { pairwise = false, nearest_long = false, same_expiry = false }
+
+# ---- Call Spread -----------------------------------------------------------------------
+
+[[case]]
+id = "call-spread"
+section = "Sample Calculations: Call Spread, first example"
+basis = "initial"
+underlying = 128.50
+legs = [
+  { side = "long",  qty = 1, type = "call", expiry = "2021-11", strike = 125, premium = 3.80 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-11", strike = 120, premium = 8.40 },
+]
+netted = [0, -500]
+max_loss = 500
+requirement = 880.00
+short_proceeds = 840.00
+margin_call = 40.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "call-calendar-long-first"
+section = "Sample Calculations: Call Spread, long expires before short"
+basis = "initial"
+underlying = 75
+as_of = "2022-01-14"
+legs = [
+  { side = "long",  qty = 1, type = "call", expiry = "2022-03-18", strike = 70, premium = 5 },
+  { side = "short", qty = 1, type = "call", expiry = "2022-06-17", strike = 70, premium = 8 },
+]
+requirement = 2800.00
+short_proceeds = 800.00
+margin_call = 2000.00
+valid = { pairwise = false, nearest_long = false, same_expiry = false }
+
+[[case]]
+id = "index-call-calendar-long-first"
+section = "Sample Calculations: Call Spread, broad based index, long expires before short"
+basis = "initial"
+product = "broad_index"
+underlying = 433.35
+as_of = "2021-09-17"
+legs = [
+  { side = "long",  qty = 1, type = "call", expiry = "2021-11-19", strike = 425, premium = 13.10 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-12-17", strike = 430, premium = 12.20 },
+]
+requirement = 9030.25
+short_proceeds = 1220.00
+margin_call = 7810.25
+valid = { pairwise = false, nearest_long = false, same_expiry = false }
+
+# Ten XSP 45 calls balance one SPX 450 call; both strikes are 450 in index units. The
+# long expires in 18 months and is paid in full (rules.md Q3).
+[[case]]
+id = "xsp-calls-vs-spx-call"
+section = "Sample Calculations: Call Spread, reduced value contract vs. standard contract"
+basis = "initial"
+product = "broad_index"
+underlying = 433.40
+as_of = "2021-06-18"
+legs = [
+  { side = "long",  qty = 10, type = "call", expiry = "2022-12-16", strike = 45,  premium = 1.35, reduced = 10 },
+  { side = "short", qty = 1,  type = "call", expiry = "2021-09-17", strike = 450, premium = 0.25 },
+]
+netted = [0]
+max_loss = 0
+requirement = 1350.00
+short_proceeds = 25.00
+margin_call = 1325.00
+valid = { pairwise = true, nearest_long = true, same_expiry = false }
+
+# ---- Short Put and Short Call ----------------------------------------------------------
+
+[[case]]
+id = "short-straddle"
+section = "Sample Calculations: Short Put and Short Call, equity"
+kind = "straddle"
+basis = "initial"
+underlying = 92.63
+legs = [
+  { side = "short", qty = 1, type = "call", expiry = "2021-12", strike = 90, premium = 7 },
+  { side = "short", qty = 1, type = "put",  expiry = "2021-12", strike = 90, premium = 3.70 },
+]
+requirement = 2922.60
+short_proceeds = 1070.00
+margin_call = 1852.60
+
+[[case]]
+id = "short-index-straddle"
+section = "Sample Calculations: Short Put and Short Call, broad based index"
+kind = "straddle"
+basis = "initial"
+product = "broad_index"
+underlying = 433.35
+legs = [
+  { side = "short", qty = 1, type = "put",  expiry = "2021-11", strike = 435, premium = 7.20 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-11", strike = 435, premium = 5.50 },
+]
+requirement = 7770.25
+short_proceeds = 1270.00
+margin_call = 6500.25
+
+[[case]]
+id = "short-reduced-index-straddle"
+section = "Sample Calculations: Short Put and Short Call, reduced value broad based index"
+kind = "straddle"
+basis = "initial"
+product = "broad_index"
+underlying = 43.34
+legs = [
+  { side = "short", qty = 1, type = "put",  expiry = "2021-12", strike = 45, premium = 2.85 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-12", strike = 45, premium = 1.35 },
+]
+requirement = 1070.10
+short_proceeds = 420.00
+margin_call = 650.10
+
+# ---- Short Put and Short Underlying; Short Call and Long Underlying; Short Index Call and Long ETF
+
+[[case]]
+id = "short-put-short-stock"
+section = "Sample Calculations: Short Put and Short Underlying"
+kind = "covered_put"
+basis = "initial"
+underlying = 255
+legs = [
+  { side = "short", qty = 100, type = "stock", price = 255 },
+  { side = "short", qty = 1, type = "put", expiry = "2021-11", strike = 250, premium = 3 },
+]
+requirement = 38250.00
+short_proceeds = 25800.00
+margin_call = 12450.00
+
+[[case]]
+id = "short-call-long-stock"
+section = "Sample Calculations: Short Call and Long Underlying"
+kind = "covered_call"
+basis = "initial"
+underlying = 92.38
+legs = [
+  { side = "long",  qty = 100, type = "stock", price = 92.38 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-12", strike = 90, premium = 7 },
+]
+requirement = 4619.00
+short_proceeds = 700.00
+margin_call = 3919.00
+
+[[case]]
+id = "short-index-call-long-etf"
+section = "Sample Calculations: Short Index Call and Long ETF"
+kind = "index_call_etf"
+basis = "initial"
+product = "broad_index"
+underlying = 3650
+legs = [
+  { side = "long",  qty = 10111, type = "stock", price = 36.10 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-12", strike = 3600, premium = 45 },
+]
+requirement = 182503.55
+short_proceeds = 4500.00
+margin_call = 178003.55
+
+# ---- Complex Spreads -------------------------------------------------------------------
+
+[[case]]
+id = "long-box-european"
+section = "Complex Spreads: Long Box Spread - Loan Value Utilized"
+kind = "european_long_box"
+basis = "initial"
+style = "european"
+underlying = 550
+legs = [
+  { side = "long",  qty = 1, type = "call", expiry = "2021-11", strike = 535, premium = 19.40 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-11", strike = 545, premium = 12.20 },
+  { side = "long",  qty = 1, type = "put",  expiry = "2021-11", strike = 545, premium = 5.30 },
+  { side = "short", qty = 1, type = "put",  expiry = "2021-11", strike = 535, premium = 3 },
+]
+netted = [1000, 1000]
+max_loss = 0
+box_margin = 500.00
+short_proceeds = 1520.00
+margin_call = 450.00        # net debit 950 less loan value (1,000 - 500)
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "long-box-american"
+section = "Complex Spreads: Long Box Spread - Loan Value Not Utilized"
+basis = "initial"
+underlying = 50
+legs = [
+  { side = "long",  qty = 1, type = "call", expiry = "2021-09", strike = 40, premium = 15.40 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-09", strike = 50, premium = 7.20 },
+  { side = "long",  qty = 1, type = "put",  expiry = "2021-09", strike = 50, premium = 1.75 },
+  { side = "short", qty = 1, type = "put",  expiry = "2021-09", strike = 40, premium = 0.40 },
+]
+netted = [1000, 1000]
+max_loss = 0
+requirement = 1715.00
+short_proceeds = 760.00
+margin_call = 955.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "long-call-butterfly"
+section = "Complex Spreads: Long Butterfly Spread - Calls"
+basis = "initial"
+underlying = 550
+legs = [
+  { side = "long",  qty = 1, type = "call", expiry = "2021-11", strike = 545, premium = 12.40 },
+  { side = "short", qty = 2, type = "call", expiry = "2021-11", strike = 550, premium = 8.80 },
+  { side = "long",  qty = 1, type = "call", expiry = "2021-11", strike = 565, premium = 2 },
+]
+netted = [0, 500, -1000]
+max_loss = 1000
+requirement = 2440.00
+short_proceeds = 1760.00
+margin_call = 680.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "long-put-condor"
+section = "Complex Spreads: Long Condor Spread - Puts"
+basis = "initial"
+underlying = 1160
+legs = [
+  { side = "long",  qty = 1, type = "put", expiry = "2022-05", strike = 1050, premium = 47.10 },
+  { side = "short", qty = 1, type = "put", expiry = "2022-05", strike = 1075, premium = 55.70 },
+  { side = "short", qty = 1, type = "put", expiry = "2022-05", strike = 1100, premium = 66.30 },
+  { side = "long",  qty = 1, type = "put", expiry = "2022-05", strike = 1125, premium = 85.40 },
+]
+netted = [0, 2500, 2500, 0]
+max_loss = 0
+requirement = 13250.00
+short_proceeds = 12200.00
+margin_call = 1050.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "long-call-condor"
+section = "Complex Spreads: Long Condor Spread - Calls"
+basis = "initial"
+underlying = 26.75
+legs = [
+  { side = "long",  qty = 1, type = "call", expiry = "2021-09", strike = 22.5, premium = 0.45 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-09", strike = 25,   premium = 0.75 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-09", strike = 30,   premium = 2.75 },
+  { side = "long",  qty = 1, type = "call", expiry = "2021-09", strike = 32.5, premium = 4.30 },
+]
+netted = [0, 250, 250, 0]
+max_loss = 0
+requirement = 475.00
+short_proceeds = 350.00
+margin_call = 125.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+# The manual's table lists the 20 strike twice (once per short leg); netted here is per
+# distinct strike.
+[[case]]
+id = "short-iron-butterfly"
+section = "Complex Spreads: Short Iron Butterfly Spread"
+basis = "initial"
+underlying = 26.75
+legs = [
+  { side = "long",  qty = 1, type = "put",  expiry = "2021-10", strike = 16, premium = 0.10 },
+  { side = "short", qty = 1, type = "put",  expiry = "2021-10", strike = 20, premium = 0.20 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-10", strike = 20, premium = 7.00 },
+  { side = "long",  qty = 1, type = "call", expiry = "2021-10", strike = 24, premium = 4.00 },
+]
+netted = [-400, 0, -400]
+max_loss = 400
+requirement = 810.00
+short_proceeds = 720.00
+margin_call = 90.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "short-iron-condor"
+section = "Complex Spreads: Short Iron Condor Spread"
+basis = "initial"
+underlying = 1060
+legs = [
+  { side = "long",  qty = 1, type = "put",  expiry = "2021-09", strike = 1000, premium = 32.00 },
+  { side = "short", qty = 1, type = "put",  expiry = "2021-09", strike = 1025, premium = 35.10 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-09", strike = 1150, premium = 9.40 },
+  { side = "long",  qty = 1, type = "call", expiry = "2021-09", strike = 1175, premium = 6.30 },
+]
+netted = [-2500, 0, 0, -2500]
+max_loss = 2500
+requirement = 6330.00
+short_proceeds = 4450.00
+margin_call = 1880.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+# ---- Maintenance Margin for Hedged Underlying Positions --------------------------------
+# The manual omits option premiums in most of these; only the stock leg's maintenance
+# requirement is checked.
+
+[[case]]
+id = "long-put-long-stock"
+section = "Maintenance Margin for Hedged Underlying Positions: Long Put and Long Underlying"
+kind = "protective_put"
+underlying = 103.50
+legs = [
+  { side = "long", qty = 100, type = "stock", price = 103.50 },
+  { side = "long", qty = 1, type = "put", expiry = "2021-11", strike = 95 },
+]
+underlying_requirement = 1800.00    # lower of 1,800.00 and 2,587.50
+
+# The manual computes (a) as 110% of the call strike plus the out-of-the-money amount:
+# the short stock is carried at the strike (HedgedShortValue::exercise_price).
+[[case]]
+id = "long-call-short-stock"
+section = "Maintenance Margin for Hedged Underlying Positions: Long Call and Short Underlying"
+kind = "protective_call"
+underlying = 46
+legs = [
+  { side = "short", qty = 100, type = "stock", price = 46 },
+  { side = "long",  qty = 1, type = "call", expiry = "2021-12", strike = 50 },
+]
+underlying_requirement = 5900.00    # lower of 5,900.00 and 5,980.00
+
+[[case]]
+id = "conversion-maintenance"
+section = "Maintenance Margin for Hedged Underlying Positions: Conversion"
+kind = "conversion"
+underlying = 115
+legs = [
+  { side = "long",  qty = 100, type = "stock", price = 115 },
+  { side = "short", qty = 1, type = "call", expiry = "2022-05", strike = 110, premium = 6.50 },
+  { side = "long",  qty = 1, type = "put",  expiry = "2022-05", strike = 110, premium = 1.35 },
+]
+underlying_requirement = 1100.00
+
+[[case]]
+id = "conversion-initial"
+section = "Maintenance Margin for Hedged Underlying Positions: Conversion (Initial Margin)"
+kind = "conversion"
+basis = "initial"
+underlying = 115
+legs = [
+  { side = "long",  qty = 100, type = "stock", price = 115 },
+  { side = "short", qty = 1, type = "call", expiry = "2022-05", strike = 110, premium = 6.50 },
+  { side = "long",  qty = 1, type = "put",  expiry = "2022-05", strike = 110, premium = 1.35 },
+]
+requirement = 5885.00
+short_proceeds = 650.00
+margin_call = 5235.00
+
+[[case]]
+id = "reverse-conversion-maintenance"
+section = "Maintenance Margin for Hedged Underlying Positions: Reverse Conversion"
+kind = "reverse_conversion"
+underlying = 115
+legs = [
+  { side = "short", qty = 100, type = "stock", price = 115 },
+  { side = "long",  qty = 1, type = "call", expiry = "2022-05", strike = 110, premium = 6.50 },
+  { side = "short", qty = 1, type = "put",  expiry = "2022-05", strike = 110, premium = 1.35 },
+]
+underlying_requirement = 12100.00
+
+[[case]]
+id = "reverse-conversion-initial"
+section = "Maintenance Margin for Hedged Underlying Positions: Reverse Conversion (Initial Margin)"
+kind = "reverse_conversion"
+basis = "initial"
+underlying = 115
+legs = [
+  { side = "short", qty = 100, type = "stock", price = 115 },
+  { side = "long",  qty = 1, type = "call", expiry = "2022-05", strike = 110, premium = 6.50 },
+  { side = "short", qty = 1, type = "put",  expiry = "2022-05", strike = 110, premium = 1.35 },
+]
+requirement = 17900.00
+short_proceeds = 11635.00
+margin_call = 6265.00
+
+[[case]]
+id = "reverse-conversion-itm-put"
+section = "Maintenance Margin for Hedged Underlying Positions: Reverse Conversion, in-the-money put"
+kind = "reverse_conversion"
+underlying = 71.90
+legs = [
+  { side = "short", qty = 100, type = "stock", price = 71.90 },
+  { side = "long",  qty = 1, type = "call", expiry = "2021-12", strike = 75 },
+  { side = "short", qty = 1, type = "put",  expiry = "2021-12", strike = 75 },
+]
+underlying_requirement = 8560.00    # 8,250.00 + put in-the-money amount 310.00
+
+[[case]]
+id = "collar"
+section = "Maintenance Margin for Hedged Underlying Positions: Collar"
+kind = "collar"
+underlying = 31.75
+legs = [
+  { side = "long",  qty = 100, type = "stock", price = 31.75 },
+  { side = "long",  qty = 1, type = "put",  expiry = "2021-12", strike = 30 },
+  { side = "short", qty = 1, type = "call", expiry = "2021-12", strike = 35 },
+]
+underlying_requirement = 475.00     # lower of 475.00 and 875.00

@@ -1,0 +1,133 @@
+# Worked examples from the Cboe Margin Manual (2021-11-30), transcribed as test cases.
+# Numbers are the manual's; layout and field names are ours.
+#
+# Conventions
+#   multiplier: underlying units per contract (all examples are standard 100-share contracts)
+#   expiry:     "YYYY-MM". The manual omits the year for its "Nov" examples; 2021 is assumed.
+#   premium:    per share; dollar value = premium * multiplier * qty
+#   netted:     the manual's net intrinsic value at each strike, in dollars, in strike order
+#   valid:      whether the whole position is one valid spread under each expiry_rule policy
+#               (pairwise = short pairs with a long of the same type expiring on or after it;
+#                nearest_long = every short expires on or before the earliest long;
+#                same_expiry = all legs expire together)
+#
+# Section names refer to the manual's headings.
+
+[[case]]
+id = "mpl-vertical"
+section = "Spread Maximum Potential Loss Computation, first example"
+multiplier = 100
+legs = [
+  { side = "long",  qty = 10, type = "call", expiry = "2021-01", strike = 75 },
+  { side = "short", qty = 10, type = "call", expiry = "2021-01", strike = 85 },
+]
+netted = [0, 10000]
+max_loss = 0
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "mpl-butterfly-uneven"
+section = "Spread Maximum Potential Loss Computation, non-symmetrical butterfly"
+multiplier = 100
+legs = [
+  { side = "long",  qty = 10, type = "call", expiry = "2021-04", strike = 45 },
+  { side = "short", qty = 20, type = "call", expiry = "2021-04", strike = 55 },
+  { side = "long",  qty = 10, type = "call", expiry = "2021-04", strike = 60 },
+]
+netted = [0, 10000, 5000]
+max_loss = 0
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "mpl-iron-condor"
+section = "Spread Maximum Potential Loss Computation, non-symmetrical iron condor"
+multiplier = 100
+legs = [
+  { side = "long",  qty = 5,  type = "put",  expiry = "2021-06", strike = 60 },
+  { side = "short", qty = 5,  type = "put",  expiry = "2021-06", strike = 70 },
+  { side = "short", qty = 10, type = "call", expiry = "2021-06", strike = 85 },
+  { side = "long",  qty = 10, type = "call", expiry = "2021-06", strike = 90 },
+]
+netted = [-5000, 0, 0, -5000]
+max_loss = 5000
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "mpl-iron-condor-call-spread-later"
+section = "Mixed expirations: maximum potential loss only valid while spread remains intact"
+multiplier = 100
+legs = [
+  { side = "long",  qty = 5,  type = "put",  expiry = "2021-06", strike = 60 },
+  { side = "short", qty = 5,  type = "put",  expiry = "2021-06", strike = 70 },
+  { side = "short", qty = 10, type = "call", expiry = "2021-07", strike = 85 },
+  { side = "long",  qty = 10, type = "call", expiry = "2021-07", strike = 90 },
+]
+netted = [-5000, 0, 0, -5000]
+max_loss = 5000
+# The July short call expires after the June long put, the earliest long.
+valid = { pairwise = true, nearest_long = false, same_expiry = false }
+
+[[case]]
+id = "mpl-iron-condor-long-call-later"
+section = "Mixed expirations: maximum potential loss static (iron condor)"
+multiplier = 100
+legs = [
+  { side = "long",  qty = 5,  type = "put",  expiry = "2021-06", strike = 60 },
+  { side = "short", qty = 5,  type = "put",  expiry = "2021-06", strike = 70 },
+  { side = "short", qty = 10, type = "call", expiry = "2021-06", strike = 85 },
+  { side = "long",  qty = 10, type = "call", expiry = "2021-07", strike = 90 },
+]
+netted = [-5000, 0, 0, -5000]
+max_loss = 5000
+valid = { pairwise = true, nearest_long = true, same_expiry = false }
+
+[[case]]
+id = "mpl-butterfly-four-expiries"
+section = "Mixed expirations: maximum potential loss static (butterfly)"
+multiplier = 100
+legs = [
+  { side = "long",  qty = 10, type = "call", expiry = "2021-04", strike = 45 },
+  { side = "short", qty = 10, type = "call", expiry = "2021-03", strike = 55 },
+  { side = "short", qty = 10, type = "call", expiry = "2021-05", strike = 55 },
+  { side = "long",  qty = 10, type = "call", expiry = "2021-06", strike = 60 },
+]
+netted = [0, 10000, 5000]
+max_loss = 0
+# Valid pairwise only: March 55 pairs with April 45, and May 55 pairs with June 60.
+# The May short expires after the April long, the earliest long.
+valid = { pairwise = true, nearest_long = false, same_expiry = false }
+
+[[case]]
+id = "short-box"
+section = "Complex Spreads: Short Box Spread"
+multiplier = 100
+underlying = 66
+legs = [
+  { side = "short", qty = 1, type = "call", expiry = "2021-11", strike = 50, premium = 17.30 },
+  { side = "long",  qty = 1, type = "call", expiry = "2021-11", strike = 60, premium = 8.40 },
+  { side = "short", qty = 1, type = "put",  expiry = "2021-11", strike = 60, premium = 1.25 },
+  { side = "long",  qty = 1, type = "put",  expiry = "2021-11", strike = 50, premium = 0.30 },
+]
+netted = [-1000, -1000]
+max_loss = 1000
+requirement = 1870.00      # max loss + long premiums (840 + 30)
+short_proceeds = 1855.00
+margin_call = 15.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
+
+[[case]]
+id = "long-put-butterfly"
+section = "Complex Spreads: Long Butterfly Spread - Puts"
+multiplier = 100
+underlying = 550
+legs = [
+  { side = "long",  qty = 1, type = "put", expiry = "2021-11", strike = 540, premium = 5.60 },
+  { side = "short", qty = 2, type = "put", expiry = "2021-11", strike = 550, premium = 7.20 },
+  { side = "long",  qty = 1, type = "put", expiry = "2021-11", strike = 555, premium = 9.80 },
+]
+netted = [-500, 500, 0]
+max_loss = 500
+requirement = 2040.00      # max loss + long premiums (560 + 980)
+short_proceeds = 1440.00
+margin_call = 600.00
+valid = { pairwise = true, nearest_long = true, same_expiry = true }
