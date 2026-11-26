@@ -482,7 +482,7 @@ struct Builder {
     // first. The congruence holds for every whole-lot solution, so no solution is lost.
     // (A full lattice basis of the balance row, which makes every integer choice balance,
     // was tried and was 2.8 times slower on the 1,000-case test: its columns are dense.)
-    void aggregates(const std::vector<int>& candidates, std::int64_t g) {
+    void aggregates(const std::vector<int>& candidates, std::int64_t group_key) {
         const int first = static_cast<int>(m.column.size()) - static_cast<int>(candidates.size());
         for (OptionType t : {OptionType::call, OptionType::put}) {
             std::map<std::int64_t, std::vector<std::pair<int, double>>> by;  // |units| -> (member column, ±1)
@@ -498,14 +498,14 @@ struct Builder {
                     if (other.first != u) g = std::gcd(g, other.first);
                 const std::int64_t k = g / std::gcd(u, g);
                 if (k == 1 && cols.size() < 2) continue;  // a lone member is already an integer column
-                int row = this->row(0, 0, Key{} << 'A' << g << static_cast<int>(t) << u);
+                int row = this->row(0, 0, Key{} << 'A' << group_key << static_cast<int>(t) << u);
                 double lo = 0, up = 0;
                 for (auto [col, sign] : cols) {
                     m.lp.columns[col].push_back({row, sign});
                     (sign > 0 ? up : lo) += sign * m.lp.col_up[col];
                 }
                 const double kd = static_cast<double>(k);
-                column(0, std::ceil(lo / kd), std::floor(up / kd), {{row, -kd}}, Key{} << 'M' << g << static_cast<int>(t) << u);
+                column(0, std::ceil(lo / kd), std::floor(up / kd), {{row, -kd}}, Key{} << 'M' << group_key << static_cast<int>(t) << u);
                 m.integer.push_back(true);
                 m.column.push_back({Model::Column::aggregate, m.groups - 1});
             }

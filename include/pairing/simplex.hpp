@@ -45,9 +45,10 @@ struct LpSolution {
     int iterations = 0;
 };
 
-// Dense bounded-variable dual simplex with an explicit basis inverse, sized for one
-// subproblem (tens to a few hundred rows). Bounds may change between solves; the matrix
-// and costs may not, so a previous basis stays dual feasible and is a warm start (spec §3.2).
+// Bounded-variable dual simplex with dual steepest-edge pricing, for one subproblem.
+// The basis is held as a sparse LU factorization with product-form updates (Factor).
+// Bounds may change between solves; the matrix and costs may not, so a previous basis
+// stays dual feasible and is a warm start (spec §3.2).
 class DualSimplex {
 public:
     explicit DualSimplex(const Lp& lp);
@@ -60,14 +61,44 @@ public:
     // otherwise the previous solve's.
     LpSolution solve(const LpBasis& start = {});
 
-    // The basis with its inverse, so a caller can return to it without refactoring.
+    // The basis factorization: B = L·U from a left-looking LU whose column order comes
+    // from peeling row and column singletons (on a 1,000-series book 1,160 of 1,182 basis
+    // columns peel, leaving a 22-column nucleus, so L and U have almost no fill), then one
+    // eta column per basis change. Solves cost O(nnz(L, U, etas)) instead of the O(m²) of
+    // the explicit inverse it replaced.
+    class Factor {
+    public:
+        // cols[k]: basis position k's column (row, value). A column with no usable pivot
+        // is replaced by the logical of an unpivoted row; repairs lists (position, row).
+        void factor(int m, const std::vector<std::vector<Lp::Entry>>& cols, std::vector<std::pair<int, int>>& repairs);
+        // B⁻¹a: in indexed by row (overwritten), out by basis position.
+        void ftran(std::vector<double>& in, std::vector<double>& out) const;
+        // cᵀB⁻¹: in indexed by basis position (overwritten), out by row.
+        void btran(std::vector<double>& in, std::vector<double>& out) const;
+        // Position r's column became one whose B⁻¹-image is w.
+        void update(int r, const std::vector<double>& w);
+
+    private:
+        int m_ = 0;
+        std::vector<int> position_, row_;  // per pivot, in elimination order
+        std::vector<double> diag_;
+        std::vector<int> u_start_, u_pivot_;  // U by pivot: entries in earlier pivots' rows
+        std::vector<double> u_value_;
+        std::vector<int> l_row_, l_start_, l_index_;  // L as elimination steps on rows
+        std::vector<double> l_value_;
+        std::vector<int> eta_r_, eta_start_, eta_index_;
+        std::vector<double> eta_value_;
+    };
+
+    // The basis with its factorization, so a caller can return to it without refactoring.
     struct Snapshot {
         std::vector<int> head;
         std::vector<signed char> state;
-        std::vector<double> binv, norm;
+        Factor factor;
+        std::vector<double> norm;
         int since_refactor = 0;
     };
-    Snapshot save() const { return {head_, state_, binv_, norm_, since_refactor_}; }
+    Snapshot save() const { return {head_, state_, factor_, norm_, since_refactor_}; }
     void restore(Snapshot s);
 
 private:
@@ -78,8 +109,9 @@ private:
     std::vector<double> row_value_;
     std::vector<signed char> state_;
     std::vector<int> head_;
-    std::vector<double> binv_;  // m×m, row-major
-    std::vector<double> norm_;  // squared norm of each row of binv_, for steepest-edge pricing
+    Factor factor_;
+    std::vector<double> norm_;  // per basis position: squared norm of B⁻¹'s row, for steepest-edge pricing
+    std::vector<double> rho_, work_, work2_;  // row r of B⁻¹; scratch for solves
     std::vector<double> x_, d_, alpha_;
     int since_refactor_ = 0;
     bool primal_current_ = false;  // x_ matches the basis and bounds (pivots and set_bounds keep it)
@@ -87,7 +119,7 @@ private:
     double nonbasic_value(int j) const;
     double dot_row(const double* rho, int j) const;
     void refactor();
-    void finish_refactor();
+    void column(int j, std::vector<double>& by_row) const;  // column j of [A, -I], dense
     void compute_primal();
     void compute_dual();
     bool restore_dual_feasibility(double tol);

@@ -31,10 +31,8 @@ constexpr double artificial_bound = 1e9;
 
 double sign(double v) { return v < 0 ? -1.0 : 1.0; }
 
-// Dense kernels over rows of the inverse. A single running sum is a chain of dependent
-// adds the compiler may not reorder (no -ffast-math), so it runs at one add per add
-// latency; four independent sums let it vectorize and pipeline. On a 1,182-row inverse
-// this made the O(m²) passes several times faster.
+// A single running sum is a chain of dependent adds the compiler may not reorder (no
+// -ffast-math); four independent sums let it vectorize and pipeline.
 double dot(const double* a, const double* b, int n) {
     double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
     int i = 0;
@@ -45,23 +43,6 @@ double dot(const double* a, const double* b, int n) {
         s3 += a[i + 3] * b[i + 3];
     }
     for (; i < n; ++i) s0 += a[i] * b[i];
-    return (s0 + s1) + (s2 + s3);
-}
-
-// row -= f·pivot, returning the updated row's squared norm.
-double axpy_norm(double* row, const double* pivot, double f, int n) {
-    double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
-    int i = 0;
-    for (; i + 4 <= n; i += 4) {
-        const double a = row[i] - f * pivot[i], b = row[i + 1] - f * pivot[i + 1];
-        const double c = row[i + 2] - f * pivot[i + 2], d = row[i + 3] - f * pivot[i + 3];
-        row[i] = a, row[i + 1] = b, row[i + 2] = c, row[i + 3] = d;
-        s0 += a * a, s1 += b * b, s2 += c * c, s3 += d * d;
-    }
-    for (; i < n; ++i) {
-        row[i] -= f * pivot[i];
-        s0 += row[i] * row[i];
-    }
     return (s0 + s1) + (s2 + s3);
 }
 
@@ -121,16 +102,18 @@ DualSimplex::DualSimplex(const Lp& lp) : lp_(lp), m_(lp.rows()), n_(lp.cols()) {
         state_[n_ + i] = basic;
     }
     for (int j = 0; j < n_; ++j) state_[j] = cost_[j] >= 0 ? at_lower : at_upper;
-    binv_.assign(static_cast<std::size_t>(m_) * m_, 0.0);
-    for (int i = 0; i < m_; ++i) binv_[static_cast<std::size_t>(i) * m_ + i] = -1.0;
-    norm_.assign(m_, 1.0);
+    rho_.assign(m_, 0.0);
+    work_.assign(m_, 0.0);
+    work2_.assign(m_, 0.0);
+    refactor();
+    norm_.assign(m_, 1.0);  // B = -I: every row of B⁻¹ has norm 1
 }
 
 void DualSimplex::restore(Snapshot s) {
     primal_current_ = false;
     head_ = std::move(s.head);
     state_ = std::move(s.state);
-    binv_ = std::move(s.binv);
+    factor_ = std::move(s.factor);
     norm_ = std::move(s.norm);
     since_refactor_ = s.since_refactor;
 }
@@ -150,10 +133,17 @@ void DualSimplex::set_bounds(int col, double lo, double up) {
     const double delta = nonbasic_value(col) - before;
     if (delta == 0) return;
     x_[col] += delta;
-    for (int k = 0; k < m_; ++k) {
-        const double w = dot_row(&binv_[static_cast<std::size_t>(k) * m_], col);
-        if (w != 0) x_[head_[k]] -= w * delta;
-    }
+    column(col, work_);
+    factor_.ftran(work_, work2_);
+    for (int k = 0; k < m_; ++k)
+        if (work2_[k] != 0) x_[head_[k]] -= work2_[k] * delta;
+}
+
+void DualSimplex::column(int j, std::vector<double>& by_row) const {
+    std::fill(by_row.begin(), by_row.end(), 0.0);
+    if (j >= n_) by_row[j - n_] = -1.0;
+    else
+        for (const auto& e : lp_.columns[j]) by_row[e.row] = e.value;
 }
 
 double DualSimplex::nonbasic_value(int j) const {
@@ -170,114 +160,229 @@ double DualSimplex::dot_row(const double* rho, int j) const {
     return s;
 }
 
-// Gauss-Jordan inversion with partial pivoting. A (near-)singular basis is repaired by
-// swapping in the logical variable whose transformed column gives the largest pivot.
-//
-// The working copy of B is column-major and rows are never swapped: perm[k] is the
-// physical row that pivots basis position k. Scanning a column for its pivot and for the
-// rows to eliminate is then contiguous, and logical columns (a single -1) need no
-// elimination at all, so they go first. Row-major storage with physical swaps made every
-// step scan a column with stride m (9 ms per refactorization at 1,182 rows; now about 3).
-void DualSimplex::refactor() {
-    const std::size_t m = m_;
-    std::vector<double> a(m * m, 0.0), inv(m * m, 0.0);  // a: column-major; inv: row-major
-    std::vector<std::size_t> nz_inv;
-    std::vector<int> rows_k;
-    for (std::size_t i = 0; i < m; ++i) inv[i * m + i] = 1.0;
-    for (std::size_t k = 0; k < m; ++k) {
-        int j = head_[k];
-        if (j >= n_) a[k * m + (j - n_)] = -1.0;
-        else
-            for (const auto& e : lp_.columns[j]) a[k * m + e.row] = e.value;
+void DualSimplex::Factor::factor(int m, const std::vector<std::vector<Lp::Entry>>& cols,
+                                 std::vector<std::pair<int, int>>& repairs) {
+    m_ = m;
+    position_.clear();
+    row_.clear();
+    diag_.clear();
+    u_start_.assign(1, 0);
+    u_pivot_.clear();
+    u_value_.clear();
+    l_row_.clear();
+    l_start_.assign(1, 0);
+    l_index_.clear();
+    l_value_.clear();
+    eta_r_.clear();
+    eta_start_.assign(1, 0);
+    eta_index_.clear();
+    eta_value_.clear();
+    repairs.clear();
+
+    // Peel singletons of the active submatrix: a column with one active row pivots there
+    // (front of the order, no fill below it); a row with one active column pivots there
+    // (back of the order, reversed, every other row of its column pivoted before it). What
+    // is left, the nucleus, goes between them with partial pivoting.
+    std::vector<std::vector<int>> row_cols(m);
+    for (int k = 0; k < m; ++k)
+        for (const auto& e : cols[k]) row_cols[e.row].push_back(k);
+    std::vector<int> col_count(m), row_count(m);
+    std::vector<char> col_active(m, 1), row_active(m, 1);
+    std::vector<int> col_queue, row_queue;
+    for (int k = 0; k < m; ++k) {
+        col_count[k] = static_cast<int>(cols[k].size());
+        if (col_count[k] == 1) col_queue.push_back(k);
     }
-    std::vector<std::size_t> order;  // basis positions, logicals first
-    for (std::size_t k = 0; k < m; ++k)
-        if (head_[k] >= n_) order.push_back(k);
-    for (std::size_t k = 0; k < m; ++k)
-        if (head_[k] < n_) order.push_back(k);
+    for (int i = 0; i < m; ++i) {
+        row_count[i] = static_cast<int>(row_cols[i].size());
+        if (row_count[i] == 1) row_queue.push_back(i);
+    }
+    std::vector<std::pair<int, int>> front, back;  // (position, row)
+    auto take = [&](int k, int i) {
+        col_active[k] = row_active[i] = 0;
+        for (const auto& e : cols[k])
+            if (row_active[e.row] && --row_count[e.row] == 1) row_queue.push_back(e.row);
+        for (int c : row_cols[i])
+            if (col_active[c] && --col_count[c] == 1) col_queue.push_back(c);
+    };
+    while (!col_queue.empty() || !row_queue.empty()) {
+        if (!col_queue.empty()) {
+            const int k = col_queue.back();
+            col_queue.pop_back();
+            if (!col_active[k] || col_count[k] != 1) continue;
+            int i = -1;
+            for (const auto& e : cols[k])
+                if (row_active[e.row]) i = e.row;
+            front.push_back({k, i});
+            take(k, i);
+        } else {
+            const int i = row_queue.back();
+            row_queue.pop_back();
+            if (!row_active[i] || row_count[i] != 1) continue;
+            int k = -1;
+            for (int c : row_cols[i])
+                if (col_active[c]) k = c;
+            back.push_back({k, i});
+            take(k, i);
+        }
+    }
+    std::vector<std::pair<int, int>> order = front;
+    for (int k = 0; k < m; ++k)
+        if (col_active[k]) order.push_back({k, -1});
+    for (auto it = back.rbegin(); it != back.rend(); ++it) order.push_back(*it);
+    std::vector<char> reserved(m, 0);
+    for (const auto& [k, i] : back) reserved[i] = 1;
+
+    // Left-looking elimination in that order: each column is transformed by the earlier
+    // steps of L, its entries in pivoted rows form U, the rest (scaled) a new step of L.
+    std::vector<double> z(m, 0.0);
+    std::vector<char> touched_mark(m, 0);
+    std::vector<int> touched, pivot_of(m, -1);
     std::vector<char> pivoted(m, 0);
-    std::vector<std::size_t> perm(m);
-    for (std::size_t step = 0; step < m; ++step) {
-        const std::size_t k = order[step];
-        double* col = &a[k * m];
-        auto pivot_row = [&] {
-            std::size_t p = m;
-            double best = 0;
-            for (std::size_t i = 0; i < m; ++i)
-                if (!pivoted[i] && std::fabs(col[i]) > best) {
-                    best = std::fabs(col[i]);
-                    p = i;
-                }
-            return p;
-        };
-        std::size_t p = pivot_row();
-        if (p == m || std::fabs(col[p]) < singular_tol) {
-            int best = -1;
-            double best_v = singular_tol;
-            for (int i = 0; i < m_; ++i) {
-                if (state_[n_ + i] == basic) continue;
-                for (std::size_t r = 0; r < m; ++r) {
-                    if (!pivoted[r] && std::fabs(inv[r * m + i]) > best_v) {
-                        best_v = std::fabs(inv[r * m + i]);
-                        best = i;
+    auto touch = [&](int i) {
+        if (!touched_mark[i]) {
+            touched_mark[i] = 1;
+            touched.push_back(i);
+        }
+    };
+    auto apply_l = [&] {
+        for (std::size_t l = 0; l < l_row_.size(); ++l) {
+            const double vp = z[l_row_[l]];
+            if (vp == 0) continue;
+            for (int e = l_start_[l]; e < l_start_[l + 1]; ++e) {
+                touch(l_index_[e]);
+                z[l_index_[e]] -= l_value_[e] * vp;
+            }
+        }
+    };
+    for (auto [k, forced] : order) {
+        for (const auto& e : cols[k]) {
+            touch(e.row);
+            z[e.row] = e.value;
+        }
+        apply_l();
+        int p = -1;
+        double biggest = 0;
+        for (int i : touched)
+            if (!pivoted[i]) biggest = std::max(biggest, std::fabs(z[i]));
+        if (forced >= 0 && std::fabs(z[forced]) > singular_tol && std::fabs(z[forced]) >= 1e-3 * biggest) p = forced;
+        if (p < 0) {
+            double best = singular_tol;
+            for (int pass = 0; pass < 2 && p < 0; ++pass)
+                for (int i : touched)
+                    if (!pivoted[i] && (pass == 1 || !reserved[i]) && std::fabs(z[i]) > best) {
+                        best = std::fabs(z[i]);
+                        p = i;
                     }
+        }
+        if (p < 0) {
+            // No usable pivot: the basis is (nearly) singular here. The logical of an
+            // unpivoted row replaces the column; its image is -e_row, since L only acts on
+            // pivoted rows' values.
+            for (int pass = 0; pass < 2 && p < 0; ++pass)
+                for (int i = 0; i < m && p < 0; ++i)
+                    if (!pivoted[i] && (pass == 1 || !reserved[i])) p = i;
+            if (p < 0) throw std::runtime_error("singular basis could not be repaired");
+            for (int i : touched) z[i] = 0;
+            touch(p);
+            z[p] = -1.0;
+            repairs.push_back({k, p});
+        }
+        const int t = static_cast<int>(position_.size());
+        position_.push_back(k);
+        row_.push_back(p);
+        diag_.push_back(z[p]);
+        pivot_of[p] = t;
+        pivoted[p] = 1;
+        const int l_begin = static_cast<int>(l_index_.size());
+        for (int i : touched) {
+            if (i != p && z[i] != 0) {
+                if (pivot_of[i] >= 0) {
+                    u_pivot_.push_back(pivot_of[i]);
+                    u_value_.push_back(z[i]);
+                } else {
+                    l_index_.push_back(i);
+                    l_value_.push_back(z[i] / diag_.back());
                 }
             }
-            if (best < 0) throw std::runtime_error("singular basis could not be repaired");
-            primal_current_ = false;
-            state_[head_[k]] = at_lower;
-            head_[k] = n_ + best;
-            state_[n_ + best] = basic;
-            for (std::size_t r = 0; r < m; ++r) col[r] = -inv[r * m + best];
-            p = pivot_row();
+            z[i] = 0;
+            touched_mark[i] = 0;
         }
-        pivoted[p] = 1;
-        perm[k] = p;
-        const double piv = col[p];
-        // Row p of a over the columns still to come, scaled; earlier columns are done.
-        for (std::size_t t = step + 1; t < m; ++t) a[order[t] * m + p] /= piv;
-        col[p] = 1;
-        nz_inv.clear();
-        double* vp = &inv[p * m];
-        for (std::size_t c = 0; c < m; ++c)
-            if (vp[c] != 0) {
-                vp[c] /= piv;
-                nz_inv.push_back(c);
-            }
-        rows_k.clear();
-        for (std::size_t i = 0; i < m; ++i)
-            if (i != p && col[i] != 0) rows_k.push_back(static_cast<int>(i));
-        if (rows_k.empty()) continue;
-        // Eliminate column k from those rows: in a over the columns still to come, and in inv.
-        for (std::size_t t = step + 1; t < m; ++t) {
-            double* ct = &a[order[t] * m];
-            const double apt = ct[p];
-            if (apt == 0) continue;
-            for (int i : rows_k) ct[i] -= col[i] * apt;
-        }
-        const bool dense_inv = nz_inv.size() > m / 4;
-        for (int i : rows_k) {
-            const double f = col[i];
-            double* vi = &inv[static_cast<std::size_t>(i) * m];
-            if (dense_inv)
-                for (std::size_t c = 0; c < m; ++c) vi[c] -= f * vp[c];
-            else
-                for (std::size_t c : nz_inv) vi[c] -= f * vp[c];
-            col[i] = 0;
+        touched.clear();
+        u_start_.push_back(static_cast<int>(u_pivot_.size()));
+        if (static_cast<int>(l_index_.size()) > l_begin) {
+            l_row_.push_back(p);
+            l_start_.push_back(static_cast<int>(l_index_.size()));
         }
     }
-    binv_.resize(m * m);
-    for (std::size_t k = 0; k < m; ++k) std::copy_n(&inv[perm[k] * m], m, &binv_[k * m]);
-    finish_refactor();
 }
 
-void DualSimplex::finish_refactor() {
-    const std::size_t m = m_;
-    norm_.assign(m_, 0.0);
-    for (std::size_t k = 0; k < m; ++k) {
-        const double* row = &binv_[k * m];
-        const double s = dot(row, row, m_);
-        norm_[k] = s;
+void DualSimplex::Factor::ftran(std::vector<double>& v, std::vector<double>& out) const {
+    for (std::size_t l = 0; l < l_row_.size(); ++l) {
+        const double vp = v[l_row_[l]];
+        if (vp == 0) continue;
+        for (int e = l_start_[l]; e < l_start_[l + 1]; ++e) v[l_index_[e]] -= l_value_[e] * vp;
+    }
+    for (int t = m_ - 1; t >= 0; --t) {
+        const double xt = v[row_[t]] / diag_[t];
+        out[position_[t]] = xt;
+        if (xt == 0) continue;
+        for (int e = u_start_[t]; e < u_start_[t + 1]; ++e) v[row_[u_pivot_[e]]] -= u_value_[e] * xt;
+    }
+    for (std::size_t q = 0; q < eta_r_.size(); ++q) {
+        const double zr = out[eta_r_[q]];
+        if (zr == 0) continue;
+        out[eta_r_[q]] = 0;
+        for (int e = eta_start_[q]; e < eta_start_[q + 1]; ++e) out[eta_index_[e]] += eta_value_[e] * zr;
+    }
+}
+
+void DualSimplex::Factor::btran(std::vector<double>& c, std::vector<double>& y) const {
+    for (std::size_t q = eta_r_.size(); q-- > 0;) {
+        double s = 0;
+        for (int e = eta_start_[q]; e < eta_start_[q + 1]; ++e) s += eta_value_[e] * c[eta_index_[e]];
+        c[eta_r_[q]] = s;
+    }
+    for (int t = 0; t < m_; ++t) {
+        double v = c[position_[t]];
+        for (int e = u_start_[t]; e < u_start_[t + 1]; ++e) v -= u_value_[e] * y[row_[u_pivot_[e]]];
+        y[row_[t]] = v / diag_[t];
+    }
+    for (std::size_t l = l_row_.size(); l-- > 0;) {
+        double acc = 0;
+        for (int e = l_start_[l]; e < l_start_[l + 1]; ++e) acc += l_value_[e] * y[l_index_[e]];
+        y[l_row_[l]] -= acc;
+    }
+}
+
+void DualSimplex::Factor::update(int r, const std::vector<double>& w) {
+    const double wr = w[r];
+    for (int i = 0; i < m_; ++i) {
+        if (i == r || w[i] == 0) continue;
+        eta_index_.push_back(i);
+        eta_value_.push_back(-w[i] / wr);
+    }
+    eta_index_.push_back(r);
+    eta_value_.push_back(1 / wr);
+    eta_r_.push_back(r);
+    eta_start_.push_back(static_cast<int>(eta_index_.size()));
+}
+
+void DualSimplex::refactor() {
+    std::vector<std::vector<Lp::Entry>> cols(m_);
+    for (int k = 0; k < m_; ++k) {
+        const int j = head_[k];
+        if (j >= n_) cols[k] = {{j - n_, -1.0}};
+        else cols[k] = lp_.columns[j];
+    }
+    std::vector<std::pair<int, int>> repairs;
+    factor_.factor(m_, cols, repairs);
+    for (auto [k, row] : repairs) {
+        primal_current_ = false;
+        state_[head_[k]] = at_lower;
+        head_[k] = n_ + row;
+        state_[n_ + row] = basic;
+        if (!norm_.empty()) norm_[k] = 1.0;
     }
     since_refactor_ = 0;
 }
@@ -294,22 +399,15 @@ void DualSimplex::compute_primal() {
         else
             for (const auto& e : lp_.columns[j]) r[e.row] += e.value * v;
     }
-    for (int k = 0; k < m_; ++k) {
-        const double* row = &binv_[static_cast<std::size_t>(k) * m_];
-        const double s = dot(row, r.data(), m_);
-        x_[head_[k]] = -s;
-    }
+    factor_.ftran(r, work2_);
+    for (int k = 0; k < m_; ++k) x_[head_[k]] = -work2_[k];
     primal_current_ = true;
 }
 
 void DualSimplex::compute_dual() {
-    std::vector<double> pi(m_, 0.0);
-    for (int k = 0; k < m_; ++k) {
-        double c = cost_[head_[k]];
-        if (c == 0) continue;
-        const double* row = &binv_[static_cast<std::size_t>(k) * m_];
-        for (int i = 0; i < m_; ++i) pi[i] += c * row[i];
-    }
+    std::vector<double> c(m_), pi(m_);
+    for (int k = 0; k < m_; ++k) c[k] = cost_[head_[k]];
+    factor_.btran(c, pi);
     for (int j = 0; j < n_ + m_; ++j) d_[j] = state_[j] == basic ? 0.0 : cost_[j] - dot_row(pi.data(), j);
 }
 
@@ -348,8 +446,8 @@ int DualSimplex::choose_row(bool bland, double slack) const {
         if (v <= 0) continue;
         if (!bland) {
             // Dual steepest edge: the violation over the norm of B⁻¹'s row, the step's
-            // length in dual space. The norms are exact: refactor() computes them and the
-            // inverse's row updates keep them, in the same pass over each row.
+            // length in dual space. The norms are kept by the update formula of Forrest and
+            // Goldfarb; after a load they restart at 1.
             v = v * v / std::max(norm_[k], 1e-12);
         }
         if (bland ? (best < 0 || j < head_[best]) : v > best_v) {
@@ -366,6 +464,7 @@ void DualSimplex::load(const LpBasis& b) {
         throw std::invalid_argument("basis has the wrong size");
     head_ = b.head;
     state_ = b.state;
+    norm_.assign(m_, 1.0);
     refactor();
 }
 
@@ -456,7 +555,10 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         bool to_lower = xp < lo_[p];
         double target = to_lower ? lo_[p] : up_[p];
         double s = to_lower ? 1.0 : -1.0;
-        const double* rho = &binv_[static_cast<std::size_t>(r) * m_];
+        std::fill(work_.begin(), work_.end(), 0.0);
+        work_[r] = 1.0;
+        factor_.btran(work_, rho_);
+        const double* rho = rho_.data();
 
         // Dual ratio test. Moving x_p toward its bound needs a nonbasic variable that can
         // move in the direction delta_j = -s·alpha_j allows; the ratio d_j/delta_j is how
@@ -524,8 +626,8 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         }
 
         // Column q in terms of the basis.
-        std::fill(w.begin(), w.end(), 0.0);
-        for (int k = 0; k < m_; ++k) w[k] = dot_row(&binv_[static_cast<std::size_t>(k) * m_], q);
+        column(q, work_);
+        factor_.ftran(work_, w);
         if (std::fabs(w[r] - alpha_[q]) > 1e-7 * (1 + std::fabs(w[r]))) {
             refactor();
             compute_primal();
@@ -549,15 +651,20 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         state_[q] = basic;
         head_[r] = q;
 
-        double* prow = &binv_[static_cast<std::size_t>(r) * m_];
-        double piv = w[r];
-        for (int c = 0; c < m_; ++c) prow[c] /= piv;
-        norm_[r] /= piv * piv;
-        for (int k = 0; k < m_; ++k) {
-            if (k == r || w[k] == 0) continue;
-            double f = w[k];
-            double* row = &binv_[static_cast<std::size_t>(k) * m_];
-            norm_[k] = axpy_norm(row, prow, f, m_);
+        // Steepest-edge weights (Forrest and Goldfarb, dual): with tau = B⁻¹rho and
+        // beta_r = |rho|², beta_k += -2(w_k/w_r)tau_k + (w_k/w_r)² beta_r, and beta_r / w_r².
+        {
+            const double beta_r = dot(rho, rho, m_);
+            work_.assign(rho_.begin(), rho_.end());
+            factor_.ftran(work_, work2_);
+            const double piv = w[r];
+            for (int k = 0; k < m_; ++k) {
+                if (k == r || w[k] == 0) continue;
+                const double a = w[k] / piv;
+                norm_[k] = std::max(norm_[k] - 2 * a * work2_[k] + a * a * beta_r, 1e-12);
+            }
+            norm_[r] = std::max(beta_r / (piv * piv), 1e-12);
+            factor_.update(r, w);
         }
 
         ++iterations;
