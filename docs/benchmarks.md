@@ -51,19 +51,19 @@ Batches use the defaults (`rel_gap` 1%, 20,000 nodes). Warm starts change only t
 
 ## Pre-trade check
 
-One market-maker book per size, held in a `Book` and solved once with the defaults (`rel_gap` 1%, 3,000 nodes). Each order is priced from the book's optimum with `Book::what_if`. A resize adds or removes 1 to 10 contracts of a held series without closing it; a new series is a series the book does not hold; a close sells or buys back a whole position. Against cold is the order's total less a cold `solve()` of the book after the order, relative to it, over the first 20 orders of each kind.
+One market-maker book per size, held in a `Book` and solved once with the defaults (`rel_gap` 1%, 3,000 nodes). Each order is priced from the book's optimum with `Book::what_if`. A resize adds or removes 1 to 10 contracts of a held series without closing it; a new series is a series the book does not hold; a close sells or buys back a whole position. Against cold is the order's total less a cold `solve()` of the book after the order, relative to it, over the first 20 orders of each kind. Bounds is `Book::bounds`, a lower bound from the warm continuous relaxation and an upper bound from the book's pairing carried over; its band is (upper - lower) / upper.
 
-| Series | Book solve | Order | Orders | Median | p90 | p99 | Max | Against cold: mean | min | max |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 100 | 1.43 ms | resize | 200 | 0.12 ms | 0.18 ms | 0.23 ms | 0.26 ms | -0.0007% | -0.0165% | 0.0150% |
-| 100 | 1.43 ms | new series | 50 | 0.34 ms | 0.43 ms | 0.50 ms | 0.50 ms | 0.0000% | -0.0075% | 0.0075% |
-| 100 | 1.43 ms | close | 50 | 0.19 ms | 0.27 ms | 0.35 ms | 0.35 ms | 0.0006% | -0.0165% | 0.0233% |
-| 300 | 10.89 ms | resize | 200 | 0.91 ms | 1.47 ms | 2.08 ms | 2.84 ms | -0.0009% | -0.0190% | 0.0111% |
-| 300 | 10.89 ms | new series | 50 | 2.18 ms | 2.61 ms | 3.35 ms | 3.35 ms | -0.0003% | -0.0157% | 0.0052% |
-| 300 | 10.89 ms | close | 50 | 1.18 ms | 1.94 ms | 2.58 ms | 2.58 ms | 0.0021% | -0.0092% | 0.0327% |
-| 1000 | 416.76 ms | resize | 200 | 10.53 ms | 18.03 ms | 23.10 ms | 26.32 ms | -0.0002% | -0.0078% | 0.0060% |
-| 1000 | 416.76 ms | new series | 20 | 19.48 ms | 20.31 ms | 23.03 ms | 23.03 ms | -0.0005% | -0.0073% | 0.0066% |
-| 1000 | 416.76 ms | close | 20 | 11.96 ms | 20.18 ms | 21.80 ms | 21.80 ms | 0.0008% | -0.0049% | 0.0111% |
+| Series | Book solve | Order | Orders | Median | p90 | p99 | Max | Against cold: mean | min | max | Bounds: median | max | band median | band p90 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100 | 1.91 ms | resize | 200 | 0.13 ms | 0.19 ms | 0.25 ms | 0.35 ms | -0.0007% | -0.0165% | 0.0150% | 0.04 ms | 0.20 ms | 0.2418% | 1.0426% |
+| 100 | 1.91 ms | new series | 50 | 0.35 ms | 0.43 ms | 0.51 ms | 0.51 ms | 0.0000% | -0.0075% | 0.0075% | 0.26 ms | 0.33 ms | 0.2397% | 0.8854% |
+| 100 | 1.91 ms | close | 50 | 0.19 ms | 0.27 ms | 0.36 ms | 0.36 ms | 0.0006% | -0.0165% | 0.0233% | 0.04 ms | 0.05 ms | 1.6159% | 5.7593% |
+| 300 | 11.15 ms | resize | 200 | 0.92 ms | 1.50 ms | 2.13 ms | 2.88 ms | -0.0009% | -0.0190% | 0.0111% | 0.14 ms | 0.18 ms | 0.0649% | 0.3704% |
+| 300 | 11.15 ms | new series | 50 | 2.15 ms | 2.65 ms | 3.34 ms | 3.34 ms | -0.0003% | -0.0157% | 0.0052% | 1.32 ms | 1.65 ms | 0.0515% | 0.2060% |
+| 300 | 11.15 ms | close | 50 | 1.20 ms | 1.97 ms | 2.58 ms | 2.58 ms | 0.0021% | -0.0092% | 0.0327% | 0.15 ms | 0.20 ms | 0.5389% | 1.7965% |
+| 1000 | 423.49 ms | resize | 200 | 10.66 ms | 18.20 ms | 23.55 ms | 26.11 ms | -0.0002% | -0.0078% | 0.0060% | 0.77 ms | 0.95 ms | 0.0086% | 0.1185% |
+| 1000 | 423.49 ms | new series | 20 | 19.64 ms | 20.95 ms | 23.46 ms | 23.46 ms | -0.0005% | -0.0073% | 0.0066% | 8.84 ms | 9.47 ms | 0.0138% | 0.0911% |
+| 1000 | 423.49 ms | close | 20 | 12.54 ms | 20.71 ms | 22.15 ms | 22.15 ms | 0.0008% | -0.0049% | 0.0111% | 0.78 ms | 0.86 ms | 0.1566% | 0.5864% |
 
 ## Strike dynamic program
 

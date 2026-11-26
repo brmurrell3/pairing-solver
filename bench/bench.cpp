@@ -192,9 +192,12 @@ void orders_table(const RuleSet& r) {
                  "nodes). Each order is priced from the book's optimum with `Book::what_if`. A resize adds or removes 1 to 10 "
                  "contracts of a held series without closing it; a new series is a series the book does not hold; a close "
                  "sells or buys back a whole position. Against cold is the order's total less a cold `solve()` of the book "
-                 "after the order, relative to it, over the first 20 orders of each kind.\n\n"
-              << "| Series | Book solve | Order | Orders | Median | p90 | p99 | Max | Against cold: mean | min | max |\n"
-                 "|---|---|---|---|---|---|---|---|---|---|---|\n";
+                 "after the order, relative to it, over the first 20 orders of each kind. Bounds is `Book::bounds`, "
+                 "a lower bound from the warm continuous relaxation and an upper bound from the book's pairing carried "
+                 "over; its band is (upper - lower) / upper.\n\n"
+              << "| Series | Book solve | Order | Orders | Median | p90 | p99 | Max | Against cold: mean | min | max | "
+                 "Bounds: median | max | band median | band p90 |\n"
+                 "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
     for (int n : {100, 300, 1000}) {
         std::mt19937_64 rng(5'000 + n);  // the timing table's first book of this size
         Portfolio p = books::market_maker(rng, n);
@@ -207,7 +210,7 @@ void orders_table(const RuleSet& r) {
         const int count[] = {200, n == 1000 ? 20 : 50, n == 1000 ? 20 : 50};
         const char* names[] = {"resize", "new series", "close"};
         for (int kind = 0; kind < 3; ++kind) {
-            Stats t, diff;
+            Stats t, diff, bt, band;
             for (int k = 0; k < count[kind]; ++k) {
                 const int i = gen::uniform_int(orders, 0, static_cast<int>(p.options.size()) - 1);
                 OptionLeg order = p.options[i];
@@ -230,6 +233,10 @@ void orders_table(const RuleSet& r) {
                 t0 = std::chrono::steady_clock::now();
                 Solution w = book.what_if(order);
                 t.add(seconds_since(t0));
+                t0 = std::chrono::steady_clock::now();
+                const Book::OrderBounds b = book.bounds(order);
+                bt.add(seconds_since(t0));
+                band.add((dollars(b.upper) - b.lower) / dollars(b.upper));
                 if (k < 20) {
                     const double cold = dollars(solve(after, r, o).total);
                     diff.add((dollars(w.total) - cold) / cold);
@@ -238,7 +245,8 @@ void orders_table(const RuleSet& r) {
             std::cout << "| " << n << " | " << ms(book_s) << " | " << names[kind] << " | " << count[kind] << " | "
                       << ms(t.quantile(0.5)) << " | " << ms(t.quantile(0.9)) << " | " << ms(t.quantile(0.99)) << " | "
                       << ms(t.max()) << " | " << pct(diff.mean(), 4) << " | " << pct(*std::min_element(diff.v.begin(), diff.v.end()), 4)
-                      << " | " << pct(diff.max(), 4) << " |\n";
+                      << " | " << pct(diff.max(), 4) << " | " << ms(bt.quantile(0.5)) << " | " << ms(bt.max()) << " | "
+                      << pct(band.quantile(0.5), 4) << " | " << pct(band.quantile(0.9), 4) << " |\n";
         }
     }
     std::cout << "\n";

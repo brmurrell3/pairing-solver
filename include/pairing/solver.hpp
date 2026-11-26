@@ -196,6 +196,22 @@ public:
     // book is unchanged.
     Solution what_if(const OptionLeg& order);
     Solution what_if_stock(std::int64_t shares);  // shares bought, negative sold
+    // Bounds on the book's requirement if the order filled, far cheaper than what_if.
+    // lower (dollars) is the continuous relaxation re-solved from the book's basis, a few
+    // pivots; no pairing can do better. upper is a pairing that is valid after the order,
+    // priced by the checker: the book's, with added lots standalone and any structure that
+    // used removed lots broken up. A pre-trade check can accept when upper is within the
+    // limit and reject when lower exceeds it, and needs what_if only in between.
+    struct OrderBounds {
+        double lower = 0;
+        Money upper;
+    };
+    OrderBounds bounds(const OptionLeg& order);
+    // Whether the book's requirement after the order is within limit: from bounds() when
+    // the limit is outside them, otherwise from what_if's pairing (false when that pairing
+    // exceeds the limit, even if a better one, within rel_gap of it, might not).
+    bool fits(const OptionLeg& order, Money limit);
+
     // Fills the order: the book's portfolio and solution become what_if's.
     void fill(const OptionLeg& order);
     void fill_stock(std::int64_t shares);
@@ -213,6 +229,11 @@ private:
     Trial price(Portfolio q);
     Solution price_close(int position);
     Solution price_resize(int position, std::int64_t quantity, bool keep);
+    Solution evaluate(const OptionLeg& order);
+    Solution run(const Portfolio& q, const Model& m, DualSimplex* simplex, const std::vector<double>* start,
+                 std::vector<double>* x, const std::vector<double>* guide, const LpBasis& warm);
+    Solution carry(const OptionLeg& order, const Portfolio& q) const;
+    bool lp_only_ = false;
     void index_model();
     void restore_bounds();
     void commit(Trial t);

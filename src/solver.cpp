@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <map>
 #include <memory>
+#include <optional>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -745,6 +746,11 @@ bool feasible(const Lp& lp, const std::vector<double>& x) {
     return true;
 }
 
+bool same_series(const Option& a, const Option& b) {
+    return a.underlying == b.underlying && a.type == b.type && a.strike == b.strike && a.expiry == b.expiry &&
+           a.style == b.style && a.listing == b.listing && a.deliverable == b.deliverable && a.product == b.product;
+}
+
 // A basis for `to` from a basis of `from`, matching rows and columns by key: each keeps its
 // state, new columns sit at the bound their cost makes dual feasible (as in the slack
 // basis), and new rows' logicals are basic. The basic count is then made the row count:
@@ -963,12 +969,10 @@ Solution Book::price_resize(int i, std::int64_t quantity, bool keep) {
     const Money old_constant = m.constant;
     m.constant += unit * static_cast<std::int64_t>(delta);
 
-    SolveOptions so = o_;
-    so.warm_start = {};
     std::vector<double> x;
     const bool fits = feasible(lp, x_);
-    Solution s = solve_model(q, r_, so, m, simplex_.get(), fits ? &x_ : nullptr, &x, &x_);
-    if (keep) {
+    Solution s = run(q, m, simplex_.get(), fits ? &x_ : nullptr, &x, &x_, {});
+    if (keep && !lp_only_) {
         p_ = std::move(q);
         s_ = s;
         x_ = std::move(x);
@@ -1027,14 +1031,14 @@ Book::Trial Book::price(Portfolio q) {
         for (int j = 0; j < lp.cols(); ++j) simplex_->set_bounds(j, lp.col_lo[j], lp.col_up[j]);
         for (int i = 0; i < lp.rows(); ++i) simplex_->set_bounds(lp.cols() + i, lp.row_lo[i], lp.row_up[i]);
         const bool fits = feasible(lp, x_);
-        t.solution = solve_model(t.portfolio, r_, so, *t.model, simplex_.get(), fits ? &x_ : nullptr, &t.x, &x_);
+        t.solution = run(t.portfolio, *t.model, simplex_.get(), fits ? &x_ : nullptr, &t.x, &x_, {});
         t.shape_kept = true;
     } else {
         // A new model: it starts from the book's root basis and pairing, matched by key.
         so.warm_start = map_basis(*model_, s_.root_basis, *t.model);
         std::vector<double> start = map_assignment(*model_, x_, *t.model);
         const bool fits = feasible(t.model->lp, start);
-        t.solution = solve_model(t.portfolio, r_, so, *t.model, nullptr, fits ? &start : nullptr, &t.x, &start);
+        t.solution = run(t.portfolio, *t.model, nullptr, fits ? &start : nullptr, &t.x, &start, so.warm_start);
     }
     return t;
 }
@@ -1063,12 +1067,14 @@ Solution Book::price_close(int i) {
         lp.col_up[j] = 0;
         simplex_->set_bounds(j, lp.col_lo[j], 0);
     }
-    SolveOptions so = o_;
-    so.warm_start = {};
     std::vector<double> x;
-    Solution s = solve_model(p_, r_, so, *model_, simplex_.get(), nullptr, &x, &x_);
+    Solution s = run(p_, *model_, simplex_.get(), nullptr, &x, &x_, {});
     for (auto [j, up] : held) lp.col_up[j] = up;
     restore_bounds();
+    if (lp_only_) {
+        s.lp_bound -= static_cast<double>(separate({p_.options[i]}, p_.market, r_).total().micros()) / Money::per_dollar;
+        return s;
+    }
 
     auto it = std::find_if(s.residuals.begin(), s.residuals.end(), [&](const Residual& res) { return res.leg.position == i; });
     if (it == s.residuals.end()) throw std::logic_error("a closed position is not standalone");
@@ -1094,7 +1100,155 @@ Solution Book::price_close(int i) {
     return s;
 }
 
-Solution Book::what_if(const OptionLeg& order) {
+// solve_model for the Book's pricing paths, or, for bounds(), only the continuous
+// relaxation, from the same start: a lower bound on the total in a few pivots. On the
+// book's own simplex it then returns to the basis it started from.
+Solution Book::run(const Portfolio& q, const Model& m, DualSimplex* simplex, const std::vector<double>* start,
+                   std::vector<double>* x, const std::vector<double>* guide, const LpBasis& warm) {
+    SolveOptions so = o_;
+    so.warm_start = warm;
+    if (!lp_only_) return solve_model(q, r_, so, m, simplex, start, x, guide);
+    std::optional<DualSimplex> local;
+    std::optional<DualSimplex::Snapshot> back;
+    if (simplex) back = simplex->save();
+    else simplex = &local.emplace(m.lp);
+    LpSolution lp = simplex->solve(back ? LpBasis{} : warm);
+    if (back) simplex->restore(std::move(*back));
+    if (lp.status != LpStatus::optimal) throw std::runtime_error("the relaxation did not solve");
+    Solution s;
+    s.lp_bound = static_cast<double>(m.constant.micros()) / Money::per_dollar + lp.objective;
+    s.root_iterations = lp.iterations;
+    return s;
+}
+
+// The book's pairing carried over to the book after the order, priced by the checker:
+// added lots stay standalone; removed lots come out of the position's standalone lots
+// first, then out of the structures that use it, each broken up into standalone legs.
+Solution Book::carry(const OptionLeg& order, const Portfolio& q) const {
+    Solution s = s_;
+    const std::int64_t lots = model_->lots_per_contract;
+    const int n = static_cast<int>(p_.options.size());
+    int i = n;  // the order's position in p_, or n for a new series
+    for (int k = 0; k < n; ++k)
+        if (same_series(p_.options[k].option, order.option)) i = k;
+    std::vector<std::int64_t> standalone(n + 1, 0);
+    std::int64_t standalone_stock = 0;
+    for (const auto& r : s.residuals) {
+        if (r.leg.position == stock_position) standalone_stock += r.leg.quantity;
+        else standalone[r.leg.position] += r.leg.quantity;
+    }
+    const std::int64_t before = i < n ? std::llabs(p_.options[i].quantity) * lots : 0;
+    const std::int64_t q_after = i < n ? p_.options[i].quantity + order.quantity : order.quantity;
+    const bool flip = i < n && q_after != 0 && (q_after > 0) != (p_.options[i].quantity > 0);
+    std::int64_t remove = flip ? before : std::max<std::int64_t>(0, before - std::llabs(q_after) * lots);
+    const std::int64_t add = flip ? std::llabs(q_after) * lots : std::max<std::int64_t>(0, std::llabs(q_after) * lots - before);
+    std::int64_t from_standalone = std::min(remove, standalone[i]);
+    standalone[i] -= from_standalone;
+    remove -= from_standalone;
+    // A spread can usually give up the lots in place: with them go as many units of the
+    // other side of the same type (longs expiring first, or shorts expiring last, which
+    // keep the suffix condition best), all standalone, if the spread stays valid. Breaking
+    // up the whole spread instead, on a large book often one spread of most positions, gave
+    // an upper bound about 50% above the optimum for every reduction.
+    auto trim = [&](Structure& st) {
+        if (st.kind != StructureKind::spread) return false;
+        auto self = std::find_if(st.legs.begin(), st.legs.end(), [&](const StructureLeg& l) { return l.position == i; });
+        const std::int64_t take = std::min(remove, self->quantity);
+        const OptionLeg& o = p_.options[i];
+        const std::int64_t unit = std::llabs(lot_leg(o, 1, lots).units());
+        std::int64_t need = take * unit;
+        std::vector<StructureLeg> legs = st.legs;
+        std::vector<std::pair<int, std::int64_t>> freed = {{i, take}};
+        legs[self - st.legs.begin()].quantity -= take;
+        std::vector<int> other;
+        for (int k = 0; k < static_cast<int>(legs.size()); ++k) {
+            const OptionLeg& c = p_.options[legs[k].position];
+            if (legs[k].position != i && c.option.type == o.option.type && (c.quantity > 0) != (o.quantity > 0)) other.push_back(k);
+        }
+        std::sort(other.begin(), other.end(), [&](int a, int b) {
+            const Date ea = p_.options[legs[a].position].option.expiry, eb = p_.options[legs[b].position].option.expiry;
+            return o.quantity < 0 ? ea < eb : ea > eb;
+        });
+        for (int k : other) {
+            if (need == 0) break;
+            const std::int64_t u = std::llabs(lot_leg(p_.options[legs[k].position], 1, lots).units());
+            if (need % u != 0) continue;
+            const std::int64_t lots_here = std::min(legs[k].quantity, need / u);
+            legs[k].quantity -= lots_here;
+            need -= lots_here * u;
+            freed.push_back({legs[k].position, lots_here});
+        }
+        if (need != 0) return false;
+        std::erase_if(legs, [](const StructureLeg& l) { return l.quantity == 0; });
+        std::vector<OptionLeg> ol;
+        for (const auto& l : legs) ol.push_back(lot_leg(p_.options[l.position], l.quantity, lots));
+        if (legs.empty() || !spread_validity(ol, r_).ok) return false;
+        st.legs = std::move(legs);
+        for (auto [k, q] : freed) standalone[k] += q;
+        const std::int64_t back = std::min(remove, standalone[i]);
+        standalone[i] -= back;
+        remove -= back;
+        return true;
+    };
+    std::vector<Structure> kept;
+    for (auto& st : s.structures) {
+        bool uses = false;
+        for (const auto& l : st.legs) uses |= l.position == i;
+        if (!uses || remove == 0) {
+            kept.push_back(std::move(st));
+            continue;
+        }
+        if (trim(st)) {
+            kept.push_back(std::move(st));
+            continue;
+        }
+        for (const auto& l : st.legs) {
+            if (l.position == stock_position) standalone_stock += l.quantity;
+            else standalone[l.position] += l.quantity;
+        }
+        const std::int64_t freed = std::min(remove, standalone[i]);
+        standalone[i] -= freed;
+        remove -= freed;
+    }
+    standalone[i] += add;
+    s.structures = std::move(kept);
+    // Renumber for q: a close removes position i; a new series is position n.
+    const bool closed = i < n && q_after == 0;
+    auto renumber = [&](int position) { return closed && position > i ? position - 1 : position; };
+    for (auto& st : s.structures)
+        for (auto& l : st.legs) l.position = renumber(l.position);
+    s.residuals.clear();
+    for (int k = 0; k <= n; ++k)
+        if (standalone[k] > 0 && !(closed && k == i)) s.residuals.push_back({{renumber(k), standalone[k]}, {}});
+    if (standalone_stock > 0) s.residuals.push_back({{stock_position, standalone_stock}, {}});
+    s.total = check_solution(q, r_, s);
+    return s;
+}
+
+Book::OrderBounds Book::bounds(const OptionLeg& order) {
+    OrderBounds b;
+    b.upper = carry(order, after(order)).total;
+    lp_only_ = true;
+    try {
+        b.lower = evaluate(order).lp_bound;
+    } catch (...) {
+        lp_only_ = false;
+        throw;
+    }
+    lp_only_ = false;
+    return b;
+}
+
+bool Book::fits(const OptionLeg& order, Money limit) {
+    const OrderBounds b = bounds(order);
+    if (b.upper <= limit) return true;
+    if (b.lower > static_cast<double>(limit.micros()) / Money::per_dollar * (1 + 1e-9)) return false;
+    return what_if(order).total <= limit;
+}
+
+Solution Book::what_if(const OptionLeg& order) { return evaluate(order); }
+
+Solution Book::evaluate(const OptionLeg& order) {
     for (std::size_t i = 0; i < p_.options.size(); ++i) {
         const Option &a = p_.options[i].option, &b = order.option;
         if (a.underlying == b.underlying && a.type == b.type && a.strike == b.strike && a.expiry == b.expiry &&

@@ -410,7 +410,7 @@ void strike_dp() {
 void book_orders() {
     std::mt19937_64 rng(5'180'000);
     const ExpiryRule rules[] = {ExpiryRule::pairwise, ExpiryRule::nearest_long, ExpiryRule::same_expiry};
-    int resized = 0;
+    int resized = 0, bounded = 0;
     for (int k = 0; k < 300; ++k) {
         gen::Shape shape;
         shape.max_series = 12;
@@ -451,6 +451,13 @@ void book_orders() {
             if (after.options.empty()) continue;
             Solution w = book.what_if(order);
             CHECK_EQ(w.total, solve(after, rr, exact).total);
+            // bounds() brackets the optimum, and fits() agrees with it on either side.
+            const Book::OrderBounds b = book.bounds(order);
+            CHECK(b.lower <= dollars_of(w.total) * (1 + 1e-9) + 1e-9);
+            CHECK(b.upper >= w.total);
+            CHECK(book.fits(order, w.total));
+            CHECK(!book.fits(order, w.total - usd(0.01)));
+            ++bounded;
             CHECK_EQ(book.solution().total, solve(book.portfolio(), rr, exact).total);  // unchanged
             if (t % 2 == 1) {
                 book.fill(order);
@@ -465,6 +472,7 @@ void book_orders() {
         }
     }
     CHECK(resized > 500);
+    CHECK(bounded > 900);
 }
 
 }  // namespace

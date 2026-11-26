@@ -170,8 +170,9 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 
   At 300 series every order prices in under 3.5 ms, at 100 series under 0.6 ms. Order totals differ from a cold solve's by at most 0.033%.
 
+- *Order bounds (owner approved, 2026-11-26):* `Book::bounds(order)` returns a lower bound (the continuous relaxation re-solved from the book's basis) and an upper bound (the book's pairing carried over, priced by the checker: added lots standalone, removed lots trimmed out of their spread with matching units of the other side, other structures broken up). `Book::fits(order, limit)` decides from the bounds and calls `what_if` only when the limit falls between them. On the 1,000-series book bounds take 0.8 ms for a resize or close and 9 ms for a new series; the band (upper − lower) / upper has median 0.009% (resize), 0.014% (new series) and 0.16% (close). The `book_orders` test checks lower ≤ optimum ≤ upper and `fits` on both sides of the exact total for every order.
+
 **Status (2026-11-26): target met.** Every order on the 1,000-series book prices in under 50 ms (worst of 240: 26 ms), and the cold solve takes 0.42 s, with every HiGHS comparison within 1%. Further gains, if wanted:
 1. A bound-flipping (long-step) dual ratio test, for the cold solve's root pivots.
 2. Hypersparse solves (skipping zeros by a symbolic reach) once etas and pivots dominate.
-3. For the pre-trade decision itself: return the proven bound with the answer, so an order far from the account's limit can be accepted or rejected from the bounds alone.
-4. A stronger formulation for `nearest_long`, whose LP bound is 2.5% below the optimum on the two hardest test cases.
+3. A stronger formulation for `nearest_long`, whose LP bound is 2.5% below the optimum on the two hardest test cases.
