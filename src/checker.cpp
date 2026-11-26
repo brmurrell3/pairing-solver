@@ -1,6 +1,7 @@
 // The independent checker: it knows the Phase 1 engine and the meaning of a Solution, and
 // nothing about the model the solver built.
 
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -62,9 +63,13 @@ struct Usage {
 
 Requirement price(const Structure& st, Usage& u, const Portfolio& p, const RuleSet& r) {
     const auto& legs = st.legs;
-    for (std::size_t i = 0; i < legs.size(); ++i)
-        for (std::size_t j = i + 1; j < legs.size(); ++j)
-            require(legs[i].position != legs[j].position, "a position appears twice in one structure");
+    // A sort, not a pairwise scan: a large book's spread has about 900 legs, and the
+    // pairwise scan built a std::string message for every pair (6 ms per check).
+    std::vector<int> positions;
+    for (const auto& l : legs) positions.push_back(l.position);
+    std::sort(positions.begin(), positions.end());
+    require(std::adjacent_find(positions.begin(), positions.end()) == positions.end(),
+            "a position appears twice in one structure");
     auto count = [&](std::size_t n, bool with_stock) {
         require(legs.size() == n, "wrong number of legs");
         if (with_stock) require(legs[0].position == stock_position, "the stock leg must come first");

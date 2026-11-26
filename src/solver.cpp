@@ -173,9 +173,10 @@ struct Builder {
         }
         for (int i : short_puts) {
             if (!straddles_on) break;
+            const bool compact_i = compact.count(lot_units[i]) > 0;
             for (int j : short_calls) {
                 std::int64_t wi = lot_w[i], wj = lot_w[j];
-                if (wi == wj && compact.count(lot_units[i])) continue;
+                if (wi == wj && compact_i) continue;
                 std::int64_t g = std::gcd(wi, wj), qi = wj / g, qj = wi / g;
                 if (accepted([&] { return short_straddle(leg(i, qi), leg(j, qj), mk, r); }, q))
                     add_template(StructureKind::straddle, {{i, qi}, {j, qj}}, q);
@@ -373,9 +374,15 @@ struct Builder {
                     if (is(a, OptionType::put, +1) && is(b, OptionType::call, -1)) sell.push_back({a, b});
                 }
         Requirement q;
+        // Phase 1 takes European legs only, with the sell side's strike above the buy
+        // side's; trying the rest only collects its rejections, at about 5 µs each.
+        auto european = [&](int a) { return p.options[a].option.style == Style::european; };
         for (auto [lc, sp] : buy)
             for (auto [lp, sc] : sell) {
                 if (p.options[lc].option.expiry != p.options[lp].option.expiry) continue;
+                if (!european(lc) || !european(sp) || !european(lp) || !european(sc) ||
+                    p.options[lp].option.strike <= p.options[lc].option.strike)
+                    continue;
                 std::vector<OptionLeg> legs = {leg(lc, 1), leg(sp, 1), leg(lp, 1), leg(sc, 1)};
                 if (accepted([&] { return european_long_box(legs, r).requirement; }, q))
                     add_template(StructureKind::long_box, {{lc, 1}, {sp, 1}, {lp, 1}, {sc, 1}}, q);
