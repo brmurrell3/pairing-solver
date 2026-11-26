@@ -1,6 +1,6 @@
 # Plan
 
-**Current status (2026-11-25):** Phases 0 to 3 done. Phase 4 in progress: proofs and integrality counterexamples written; the dynamic program and template-only hardness are open.
+**Current status (2026-11-25):** Phases 0 to 3 done. Phase 4 in progress: proofs and integrality counterexamples written; the dynamic program and template-only hardness are open. Phase 6 (pre-trade speed) started 2026-11-26: see its section for the target and where it stands.
 
 ## Decisions
 
@@ -141,3 +141,37 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 - **Code:** a public repository with the clean-room note, after checking the employer's outside-activity and IP policy. Done 2026-11-26: https://github.com/brmurrell3/pairing-solver, release v1.0.0. CI (`.github/workflows/ci.yml`) builds and runs the five non-HiGHS tests and both Python checks on Ubuntu 24.04 (GCC) and macOS (Clang); first run green in under a minute per job. Assumptions: "published version" is a tagged GitHub release with no package registry (owner, 2026-11-26); CI skips the HiGHS tests (about 9 minutes) because HiGHS is not installed there, so they stay a local gate.
 - **Write-up:** a project page on brendanmurrell.com covering the formulation, the proofs and the benchmark results.
 - **Resume:** a project line on the resume.
+
+## Phase 6: pre-trade check speed
+
+**Why (owner, 2026-11-26):** the solver runs before every order is routed, on automated books of about 1,000 positions, so it must be near realtime. The 18 s for a 1,000-series book is unacceptable. Up to 1% above HiGHS per case is still acceptable in exchange for speed, and HiGHS stays the reference.
+
+**Target** *(agent's choice, open to revision)*: on the owner's Mac (M3 Max), price one order against a solved 1,000-position book in under **50 ms at p99**, and solve a 1,000-position book cold in under **1 s**, with every answer within 1% of HiGHS. The per-order number is the one that matters; the cold solve happens once, when a book is loaded.
+
+**Measured first (2026-11-26, Mac):** the earlier Linux figures did not hold. The generators used the standard library's distributions, which libc++ and libstdc++ implement differently, so the Mac ran a different case set, and on it the 1,000-case HiGHS test failed: ours 175 s against HiGHS's 46 s, 2 node-limit stops, and one large case 70% above HiGHS. The 1,000-series book took 30 s: 6.8 s root LP, then 24 s in 446 dense refactorizations during the rounding dive.
+
+**Done (commits 925313f to 22ba921):**
+- *Simplex:* refactor at an optimality check only after 16 updates or a failed first check; steepest-edge norms kept through the inverse's row updates; refactorization touches only pivot-row nonzeros (43 to 14 ms); capacity rows that one column alone uses are dropped (453 of 1,527 rows); the pivot row is formed row-wise from rho's nonzeros; bound changes update the primal values incrementally.
+- *Dive:* the root dive first holds every on-grid integer column and rounds only the fractional ones (about 12 LP solves instead of 300 to 450), then holds only columns at a bound, then holds nothing; the last is skipped when a passed-in incumbent already meets the gap.
+- *Model build:* 85 to 8.5 ms at 1,000 series, mostly by not asking Phase 1 about pairs it always rejects (its rejections are exceptions).
+- *Book (`include/pairing/solver.hpp`):* keeps one subproblem solved. A resize moves only bounds and re-solves on the book's own simplex, basis, inverse and pairing; other orders build a new model started from the book's basis and pairing, matched by row and column keys.
+- *Portable generators* (`tests/generate.hpp`): seeded books are now the same on every platform. They exposed a pruning bug in the strike DP (fixed, ab6dea7).
+- *HiGHS test:* a node-limit stop now passes if the answer is within the gap of HiGHS (assumption: the Phase 2 criterion is quality, not proof). Two of the 1,000 cases stop there.
+
+**Evidence (2026-11-26, Mac):** `ctest -E highs` passes 5 of 5; the new `solver` group `book_orders` checks `what_if` and `fill` against exact cold solves on 300 random books. `pairing_highs_tests 1000 40`: 0 failures, LP within 4e-15 of HiGHS, at most 0.996% above it; ours 45 s, HiGHS 29 s (two node-limit cases take 27 s of ours). `pairing_highs_tests large`: all five within 0.89%, slowest 1.8 s (HiGHS up to 29 s). Benchmarks (docs/benchmarks.md, "Solve time by size" and "Pre-trade check"):
+
+  | 1,000-series book | Before (Mac) | Now |
+  |---|---|---|
+  | Cold solve | 30 s | 2.4 s |
+  | Order, resize: median / p90 / p99 | 3.7 s (cold) | 96 ms / 166 ms / 2.2 s |
+  | Order, new series: median / max | 3.7 s | 147 ms / 248 ms |
+  | Order, close: median / p90 | 3.7 s | 147 ms / 2.5 s |
+
+  At 300 series every kind of order prices in 6 to 13 ms at p90. Against a cold solve, order totals differ by at most 0.024%.
+
+**Not met yet.** The 1,000-series p99 is 2.2 s and the median 96 ms, against 50 ms. Where the time goes, per resize order: 2 to 4 dense refactorizations at about 10 ms each, about 50 pivots at 0.6 ms each (dense O(m²) inverse updates at m = 1,182), 8.5 ms rebuilding the model, 6 ms in the checker. The tail is orders whose first two dives strand a linked set and whose old pairing no longer fits (mostly closes and reductions), so the free dive runs (1.5 to 3 s). Next, in order of expected gain:
+1. A sparse LU basis factorization with Forrest-Tomlin updates in place of the dense inverse, to make refactorization and pivots proportional to nonzeros. This is the change that can reach 50 ms; everything else is already a minority of the time.
+2. A repaired incumbent for reductions and closes (the old pairing with the removed lots taken out of their structures), so the free dive is never needed in a `Book`.
+3. Bounds-only updates for resizes instead of rebuilding the model.
+4. For the pre-trade decision itself: return the proven bound with the answer, so an order far from the account's limit can be accepted or rejected from the bounds alone.
+
