@@ -172,7 +172,7 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 
 **Where it stands.** The median and p90 of every kind of order meet 50 ms; the resize p99 (67 ms, about 1 order in 50 above 50 ms) and the cold solve (1.09 s) do not yet. Nearly all of an order's time is now the rounding dive's 10 to 28 LP solves: 2 to 8 dense refactorizations at about 4 ms, a primal and dual recompute per solve (0.7 ms), and 50 to 150 pivots at about 0.15 ms. The slow orders are the ones whose first held dive fails and that need 25 or more LP solves. Next, in order of expected gain:
 1. A sparse LU basis factorization with Forrest-Tomlin updates in place of the dense inverse, so refactorization and pivots cost in proportion to nonzeros. The loss rows make member columns dense (a nonzero per strike), so it likely needs the payoff rows rewritten as the strike walk's recursion (each member in O(1) rows) to avoid fill.
-2. Fewer LP solves in the dive for the slow orders: try the guided (previous-pairing) hold first when a guide exists, since it fails least often there.
+2. Fewer LP solves in the dive for the slow orders. Trying the guided (previous-pairing) hold first was measured and is worse (resize median 27 to 45 ms), so the held dives stay in their order; a cheaper fix for the failing first dive is still open.
 3. For the pre-trade decision itself: return the proven bound with the answer, so an order far from the account's limit can be accepted or rejected from the bounds alone.
 4. A bound-flipping (long-step) dual ratio test, for the cold solve's 7,000 root pivots.
 5. A stronger formulation for `nearest_long`, whose LP bound is 2.5% below the optimum on the two hardest test cases.
