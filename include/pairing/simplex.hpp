@@ -116,6 +116,9 @@ struct MipOptions {
     // A known feasible integer point (empty: none). Branch-and-bound starts with it as the
     // incumbent, so the gap test can prune from the first node.
     std::vector<double> start;
+    // An integer point near which to look for an incumbent, feasible or not (empty: none),
+    // such as the previous pairing of a book that has since changed.
+    std::vector<double> guide;
     // Branching priority per column (empty: all equal). Fractional columns of the highest
     // priority present are branched on, and fixed by the root dive, first.
     std::vector<int> priority;

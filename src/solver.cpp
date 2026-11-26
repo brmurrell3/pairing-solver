@@ -635,7 +635,7 @@ namespace {
 // costs and holds m's bounds; the search starts from its basis. start, if given, is a
 // feasible integer point of m. x receives the model's assignment.
 Solution solve_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o, const Model& m, DualSimplex* simplex,
-                     const std::vector<double>* start, std::vector<double>* x) {
+                     const std::vector<double>* start, std::vector<double>* x, const std::vector<double>* guide = nullptr) {
     // Integer assignments cost whole micro-dollars, so a node that cannot beat the
     // incumbent by half of one cannot beat it at all; the relative term absorbs LP rounding.
     double scale = std::fabs(dollars(m.constant));
@@ -648,6 +648,10 @@ Solution solve_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o
     else mo.start.assign(m.lp.cols(), 0.0);  // everything standalone is always feasible
     mo.priority = m.priority;
     mo.root_basis = o.warm_start;
+    if (guide) {
+        mo.guide = *guide;
+        for (double& v : mo.guide) v = std::round(v);  // only integer columns read it
+    }
     MipSolution mip = simplex ? branch_and_bound(*simplex, m.lp, m.integer, mo) : branch_and_bound(m.lp, m.integer, mo);
     if (mip.status != MipStatus::optimal && mip.status != MipStatus::node_limit)
         throw std::runtime_error(std::string("the subproblem did not solve: ") + status_name(mip.status));
@@ -848,14 +852,14 @@ Book::Trial Book::price(Portfolio q) {
         for (int j = 0; j < lp.cols(); ++j) simplex_->set_bounds(j, lp.col_lo[j], lp.col_up[j]);
         for (int i = 0; i < lp.rows(); ++i) simplex_->set_bounds(lp.cols() + i, lp.row_lo[i], lp.row_up[i]);
         const bool fits = feasible(lp, x_);
-        t.solution = solve_model(t.portfolio, r_, so, *t.model, simplex_.get(), fits ? &x_ : nullptr, &t.x);
+        t.solution = solve_model(t.portfolio, r_, so, *t.model, simplex_.get(), fits ? &x_ : nullptr, &t.x, &x_);
         t.shape_kept = true;
     } else {
         // A new model: it starts from the book's root basis and pairing, matched by key.
         so.warm_start = map_basis(*model_, s_.root_basis, *t.model);
         std::vector<double> start = map_assignment(*model_, x_, *t.model);
         const bool fits = feasible(t.model->lp, start);
-        t.solution = solve_model(t.portfolio, r_, so, *t.model, nullptr, fits ? &start : nullptr, &t.x);
+        t.solution = solve_model(t.portfolio, r_, so, *t.model, nullptr, fits ? &start : nullptr, &t.x, &start);
     }
     return t;
 }

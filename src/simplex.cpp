@@ -579,8 +579,11 @@ namespace {
 // more off the grid, and the dive took 300 to 450 LP solves. Holding the rest takes about
 // 12. Held columns can leave no way to round a linked set (balance and suffix rows), so
 // Hold::at_bounds holds only those at a bound and leaves on-grid interior values free to
-// absorb the rounding; the caller tries that next, then a dive that holds nothing.
-enum class Hold { none, all, at_bounds };
+// absorb the rounding; the caller tries that next. With a guide (a pre-trade check's
+// previous pairing, which may no longer fit), Hold::agree then holds only the columns where
+// the LP agrees with it and rounds toward it elsewhere, a search near the old answer
+// (as in RINS). Last comes a dive that holds nothing.
+enum class Hold { none, all, at_bounds, agree };
 
 bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, const std::vector<int>& priority,
           const std::vector<double>* guide, LpSolution sol, double integer_tol, long& iterations, std::vector<double>& x,
@@ -615,6 +618,7 @@ bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, 
             const double v = std::round(sol.x[j]);
             if (std::fabs(sol.x[j] - v) > integer_tol) continue;
             if (hold == Hold::at_bounds && v != simplex.lower(j) && v != simplex.upper(j)) continue;
+            if (hold == Hold::agree && (*guide)[j] != v) continue;
             held.push_back({j, simplex.lower(j), simplex.upper(j)});
             simplex.set_bounds(j, v, v);
         }
@@ -813,10 +817,12 @@ MipSolution branch_and_bound(DualSimplex& simplex, const Lp& lp, const std::vect
             // when the incumbent passed in (a pre-trade check's previous pairing) is already
             // within the gap of the root bound.
             auto try_dive = [&](Hold h) {
-                return dive(simplex, lp, integer, o.priority, nullptr, sol, integer_tol, out.iterations, x, obj, h);
+                const std::vector<double>* g = h == Hold::agree ? &o.guide : nullptr;
+                return dive(simplex, lp, integer, o.priority, g, sol, integer_tol, out.iterations, x, obj, h);
             };
+            const bool guided = o.guide.size() == static_cast<std::size_t>(lp.cols());
             bool found = sol.status == LpStatus::optimal &&
-                         (try_dive(Hold::all) || try_dive(Hold::at_bounds) ||
+                         (try_dive(Hold::all) || try_dive(Hold::at_bounds) || (guided && try_dive(Hold::agree)) ||
                           (!(o.start.size() && incumbent < lp_infinity && prune_test(sol.objective)) && try_dive(Hold::none)));
             if (found && obj < incumbent) {
                 incumbent = obj;
