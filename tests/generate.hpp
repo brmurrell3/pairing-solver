@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <random>
 #include <set>
 #include <tuple>
+#include <vector>
 
 #include "pairing/solver.hpp"
 
@@ -25,12 +27,25 @@ struct Shape {
     bool minis = false;      // some 10-share series
 };
 
+// The standard distributions and std::shuffle are implementation-defined, so libstdc++ and
+// libc++ draw different portfolios from one seed (on the Mac, the 1,000-case HiGHS test ran
+// a different set from Linux). These depend only on mt19937_64, whose output is specified.
+// The modulo bias is below 1e-16 for these ranges.
+inline int uniform_int(std::mt19937_64& rng, int lo, int hi) {
+    return lo + static_cast<int>(rng() % static_cast<std::uint64_t>(hi - lo + 1));
+}
+inline double uniform_01(std::mt19937_64& rng) { return static_cast<double>(rng() >> 11) * 0x1.0p-53; }
+template <class T>
+void shuffle(std::vector<T>& v, std::mt19937_64& rng) {
+    for (int i = static_cast<int>(v.size()) - 1; i > 0; --i) std::swap(v[i], v[uniform_int(rng, 0, i)]);
+}
+
 inline pairing::Money cents(long c) { return pairing::Money::from_micros(c * 10'000); }
 
 inline pairing::Portfolio portfolio(std::mt19937_64& rng, const Shape& s) {
     using namespace pairing;
-    auto uniform = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
-    auto chance = [&](double p) { return std::uniform_real_distribution<double>(0, 1)(rng) < p; };
+    auto uniform = [&](int lo, int hi) { return uniform_int(rng, lo, hi); };
+    auto chance = [&](double p) { return uniform_01(rng) < p; };
 
     Portfolio p;
     p.market.as_of = Date{2026, 1, 15};
@@ -42,7 +57,7 @@ inline pairing::Portfolio portfolio(std::mt19937_64& rng, const Shape& s) {
 
     const Date all[] = {{2026, 2, 20}, {2026, 3, 20}, {2026, 6, 19}, {2026, 9, 18}, {2027, 1, 15}, {2027, 6, 18}};
     std::vector<Date> dates(std::begin(all), std::end(all));
-    std::shuffle(dates.begin(), dates.end(), rng);
+    shuffle(dates, rng);
     dates.resize(std::min<std::size_t>(s.expiries, dates.size()));
 
     int series = uniform(std::min(s.min_series, s.max_series), s.max_series);
@@ -87,7 +102,7 @@ inline pairing::Portfolio portfolio(std::mt19937_64& rng, const Shape& s) {
 
 inline pairing::RuleSet rules(std::mt19937_64& rng, pairing::ExpiryRule e) {
     using namespace pairing;
-    auto chance = [&](double p) { return std::uniform_real_distribution<double>(0, 1)(rng) < p; };
+    auto chance = [&](double p) { return uniform_01(rng) < p; };
     RuleSet r;
     r.expiry_rule = e;
     r.basis = chance(0.5) ? Basis::initial : Basis::maintenance;

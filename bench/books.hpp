@@ -12,6 +12,7 @@
 #include <tuple>
 #include <vector>
 
+#include "generate.hpp"
 #include "pairing/solver.hpp"
 
 namespace books {
@@ -30,7 +31,7 @@ struct Chain {
 
     static Chain make(std::mt19937_64& rng, int expiries) {
         Chain c;
-        c.spot = std::uniform_int_distribution<long>(2'000, 30'000)(rng);
+        c.spot = gen::uniform_int(rng, 2'000, 30'000);
         c.step = c.spot < 5'000 ? 100 : c.spot < 20'000 ? 250 : 500;
         const Date all[] = {{2026, 2, 20}, {2026, 3, 20}, {2026, 4, 17}, {2026, 6, 19},
                             {2026, 9, 18}, {2026, 12, 18}, {2027, 1, 15}, {2027, 6, 18}};
@@ -90,8 +91,9 @@ struct Book {
     }
 };
 
-inline int pick(std::mt19937_64& rng, int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); }
-inline bool chance(std::mt19937_64& rng, double p) { return std::uniform_real_distribution<double>(0, 1)(rng) < p; }
+// Portable draws (tests/generate.hpp), so a seed gives the same book on every platform.
+inline int pick(std::mt19937_64& rng, int lo, int hi) { return gen::uniform_int(rng, lo, hi); }
+inline bool chance(std::mt19937_64& rng, double p) { return gen::uniform_01(rng) < p; }
 
 // Retail-like: a few verticals, iron condors, covered calls and single options, 1 to 5 lots.
 inline Portfolio retail(std::mt19937_64& rng) {

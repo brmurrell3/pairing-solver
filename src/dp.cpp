@@ -146,8 +146,13 @@ Solution solve_strike_dp(const Portfolio& p, const RuleSet& r, const DpOptions& 
                         t.parent = here, t.call = c, t.put = u;
                         if (pos[k].first >= 0) t.cost += delta[pos[k].first] * std::llabs(c);
                         if (pos[k].second >= 0) t.cost += delta[pos[k].second] * std::llabs(u);
-                        // The loss never falls and the remaining shorts save at most best[k+1].
-                        Money lower = t.cost + best[k + 1] + std::max(Money{}, -t.x);
+                        // The remaining shorts save at most best[k+1]. X can still rise, by
+                        // −P'ΔK at each later step while the cumulative puts are net short,
+                        // and P' can fall to pp less the shorts still to come, so the loss
+                        // is at least −X less that rise. (Treating the loss as never falling
+                        // pruned a long put below a short one: 10 and 32.5 against 15.)
+                        const Money rise = (strike[m - 1] - strike[k]) * (std::max<std::int64_t>(0, put_down[k + 1] - pp) * w);
+                        Money lower = t.cost + best[k + 1] + std::max(Money{}, -t.x - rise);
                         if (lower >= incumbent) continue;
                         next[{cc, pp}].push_back(t);
                         // Unpruned candidates count too, so one layer cannot run away.
