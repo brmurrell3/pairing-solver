@@ -2,11 +2,12 @@ module
 
 public import PairingHardness.Theorem1
 public import PairingHardness.Theorem2Four
+public import PairingHardness.Theorem4
 
 /-!
 # Hardness of pairing, machine-checked
 
-Lean statements of docs/proofs.md, "Hardness", Theorems 1 and 2. See README.md in this
+Lean statements of docs/proofs.md, "Hardness", Theorems 1 to 4. See README.md in this
 folder for what is proved and what is assumed.
 
 * `PairingHardness.N3DM.theorem1`: the butterfly instance has a pairing into named spreads
@@ -16,4 +17,9 @@ folder for what is proved and what is assumed.
   exactly when the maximum loss is, on the butterfly and condor instances.
 * `PairingHardness.N3DM.butterfly_size`, `PairingHardness.N3DM.condor_size`: the instances
   have `4n` contracts at strikes bounded by a polynomial in `n` and `W`.
+* `PairingHardness.SubsetSumInstance.theorem3`: some numbers sum to `T` exactly when one
+  maximum-loss group costs at most `R`; `cost_ge_R` shows no group costs less.
+* `PairingHardness.KSubsetSumInstance.theorem4`: the same for `k`-subset sum with every
+  uncovered requirement R3's from arbitrage-free prices (`price_valid`, `price_antitone`);
+  `PairingHardness.subsetSum_iff_kSubsetSum` reduces subset sum to `k`-subset sum.
 -/

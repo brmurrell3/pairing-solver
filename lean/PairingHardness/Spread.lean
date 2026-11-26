@@ -65,6 +65,22 @@ lemma fold_max_eq_zero_iff (s : Multiset ℤ) : s.fold max 0 = 0 ↔ ∀ x ∈ s
     · rintro ⟨ha, hs⟩
       rw [ih.2 hs]; omega
 
+lemma le_fold_max {s : Multiset ℤ} {x : ℤ} (h : x ∈ s) : x ≤ s.fold max 0 := by
+  induction s using Multiset.induction_on with
+  | empty => simp at h
+  | cons a s ih =>
+    rw [Multiset.fold_cons_left]
+    rcases Multiset.mem_cons.1 h with rfl | h
+    · exact le_max_left _ _
+    · exact le_trans (ih h) (le_max_right _ _)
+
+lemma maxLoss_nonneg (t : Spread) : 0 ≤ maxLoss t := fold_max_nonneg _
+
+/-- The maximum loss is at least the loss at any member's strike. -/
+lemma neg_payoff_le_maxLoss {t : Spread} {K : ℤ} (h : K ∈ strikes t) :
+    -payoff t K ≤ maxLoss t :=
+  le_fold_max (Multiset.mem_map_of_mem (fun K => -payoff t K) h)
+
 /-- The maximum loss is zero exactly when there is no loss at any strike. -/
 lemma maxLoss_eq_zero_iff (t : Spread) : maxLoss t = 0 ↔ NoLoss t := by
   simp [maxLoss, NoLoss, fold_max_eq_zero_iff]
@@ -101,6 +117,20 @@ lemma moment_nonpos (t : Spread) (hb : Balanced t) (hl : NoLoss t) : moment t �
     have := hl K hK
     rw [payoff_of_ge t hb K fun k hk => hmax k (Multiset.mem_toFinset.2 hk)] at this
     omega
+
+/-- The maximum loss of a balanced spread is at least its moment: the loss at its highest
+strike. -/
+lemma moment_le_maxLoss (t : Spread) (hb : Balanced t) : moment t ≤ maxLoss t := by
+  rcases Multiset.empty_or_exists_mem (strikes t) with h | ⟨k₀, hk₀⟩
+  · have h' : t.1 + t.2 = 0 := h
+    rw [add_eq_zero] at h'
+    simp [moment, h'.1, h'.2, maxLoss_nonneg]
+  · obtain ⟨K, hK, hmax⟩ :=
+      (strikes t).toFinset.exists_max_image id ⟨k₀, Multiset.mem_toFinset.2 hk₀⟩
+    rw [Multiset.mem_toFinset] at hK
+    have := neg_payoff_le_maxLoss hK
+    rw [payoff_of_ge t hb K fun k hk => hmax k (Multiset.mem_toFinset.2 hk)] at this
+    linarith
 
 lemma mem_strikes_of_long {t : Spread} {k : ℤ} (h : k ∈ t.1) : k ∈ strikes t :=
   Multiset.mem_add.2 (Or.inl h)

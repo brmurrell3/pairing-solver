@@ -58,7 +58,7 @@ The Python checks need Python 3.11 or later for `tomllib`. `/opt/homebrew/bin/py
 
 - **`check_fixtures.py`** independently recomputes each fixture's netted values, maximum loss, requirement and expiry-policy validity.
 - **`check_structure.py`** tests spec §3.1 items 1, 4 and 5 on 3,000 random portfolios. The pairing condition is checked against an explicit max-flow.
-- **`lean/`** machine-checks Theorems 1 and 2 of proofs.md, "Hardness", in Lean 4 with a pinned Mathlib. Install elan (`brew install elan-init`), then in `lean/` run `lake exe cache get` once (about 7 GB) and `lake build --wfail` (about half a minute). `lean/README.md` lists what is proved and what is assumed.
+- **`lean/`** machine-checks Theorems 1 to 4 of proofs.md, "Hardness", in Lean 4 with a pinned Mathlib. Install elan (`brew install elan-init`), then in `lean/` run `lake exe cache get` once (about 7 GB) and `lake build --wfail` (about half a minute). `lean/README.md` lists what is proved and what is assumed.
 - **`check_hardness.py`** checks the reductions of proofs.md, "Hardness", against exhaustive search on small random instances: `python3 tools/check_hardness.py` (about half a minute; `--quick` takes a second). It uses only the standard library and runs on Python 3.9 or later.
 
 ## Running code safely (read before running anything)

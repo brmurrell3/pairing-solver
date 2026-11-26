@@ -6,7 +6,7 @@ with items 3 and 6, which the others lean on. The rule references are to
 numerically. The sections after item 6 are the other Phase 4 results: integrality, compact
 straddles, the strike dynamic program, and hardness (Theorems 1 to 4 and Proposition 5),
 which `tools/check_hardness.py` checks by exhaustive search on small instances. Theorems 1
-and 2 are also proved in Lean 4 (`lean/`).
+to 4 are also proved in Lean 4 (`lean/`).
 
 ## Setting
 
@@ -342,9 +342,9 @@ proof was found, but the search was incomplete: Rudd and Schroeder (1982) and Ch
 "Margin Calculation of Multi-Leg Option Strategies", are unread (sources.md). Each reduction
 is checked by exhaustive search on small instances ("Checks" below), which tests the
 constructions and cannot prove them. The correctness and size of the reductions of
-Theorems 1 and 2 are machine-checked in Lean 4 ([lean/](../lean/README.md)); the
-NP-completeness of numerical 3-dimensional matching is cited there, not proved. Theorems 3
-and 4 and Proposition 5 are not formalized.
+Theorems 1 to 4 are machine-checked in Lean 4 ([lean/](../lean/README.md)); the
+NP-completeness of the source problems is cited there, not proved. Proposition 5 is not
+formalized.
 
 **Questions.**
 (a) Matsypura and Timkovsky write that "the complexity status of the problem with offsets
@@ -810,14 +810,20 @@ instances are not planted, so that sizes above the bound occur.
 It also checks both examples above and that the named spreads' requirements match the
 legacy figures and two uneven butterflies from the Cboe manual (pp. 37 and 54).
 
-`lean/` proves Theorems 1 and 2 in Lean 4 with Mathlib (`lake build` in that folder; see
+`lean/` proves Theorems 1 to 4 in Lean 4 with Mathlib (`lake build` in that folder; see
 its README for the statements). For every instance of numerical 3-dimensional matching it
 proves that the butterfly instance has a zero pairing into named spreads exactly when a
 matching exists (`N3DM.theorem1`), the same for spreads of at most three or four legs
 priced by their maximum loss on the butterfly and condor instances (`N3DM.theorem2_three`,
 `N3DM.theorem2_four`), and that both instances have `4n` contracts at strikes polynomial in
-`n` and `W` (`N3DM.butterfly_size`, `N3DM.condor_size`). The Lean proofs follow the
-arguments above and found no gap.
+`n` and `W` (`N3DM.butterfly_size`, `N3DM.condor_size`). For every subset-sum instance it
+proves Theorem 3's equivalence and that no group costs less than `R`
+(`SubsetSumInstance.theorem3`, `cost_ge_R`), the reduction to `k`-subset sum
+(`subsetSum_iff_kSubsetSum`), and Theorem 4 with every uncovered requirement computed by R3
+from prices it proves free of arbitrage (`KSubsetSumInstance.theorem4`, `price_valid`).
+Theorem 4 is stated in units of `1/(2k)`, with `K_low = 2S`. The Lean proofs follow the
+arguments above, except that Theorems 3 and 4 need only a lower bound on the maximum loss,
+and found no gap. Proposition 5 is not formalized.
 
 The `solver` test `subset_sum_reduction` builds Theorem 4's instance for 120 random
 `k`-subset-sum instances of 3 to 8 numbers (71 yes, 49 no), with the numbers scaled by

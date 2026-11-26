@@ -1,8 +1,9 @@
 # Machine-checked hardness proofs
 
-Lean 4 proofs of Theorems 1 and 2 of [docs/proofs.md](../docs/proofs.md), "Hardness": pairing
-calls into spreads is NP-hard in the strong sense, by reduction from numerical
-3-dimensional matching. Built against Lean 4.36.0 and Mathlib v4.36.0, both pinned
+Lean 4 proofs of Theorems 1 to 4 of [docs/proofs.md](../docs/proofs.md), "Hardness": pairing
+calls into spreads of limited shape is NP-hard in the strong sense, by reduction from
+numerical 3-dimensional matching (Theorems 1 and 2), and the solver's one-group problem is
+NP-hard, by reduction from subset sum (Theorems 3 and 4). Built against Lean 4.36.0 and Mathlib v4.36.0, both pinned
 (`lean-toolchain`, `lake-manifest.json`).
 
 ## What is proved
@@ -17,23 +18,31 @@ positive numbers in each of `A`, `B`, `C` and a positive bound):
 | `N3DM.theorem2_four` | The same for at most 4 legs and every long condor with equal wings, on the condor instance. |
 | `N3DM.butterfly_size`, `N3DM.condor_size` | Both instances have `4n` contracts at positive integer strikes of at most `2M + 2W` and `(2n + 3)M + W`, with `M = 6nW` and `W` the largest input number. So every number in the output is bounded by a polynomial in `n` and `W`, which is what a reduction in the strong sense needs. |
 | `Named.maxLoss_eq_zero_iff_isDebit` | A valid named spread has R2 maximum loss zero exactly when it is a debit spread, so Theorem 1's requirement hypothesis agrees with R2. |
-| `moment_nonpos` | The moment lemma: a balanced spread with no loss has `m(t) ≤ 0`. |
+| `moment_nonpos`, `moment_le_maxLoss` | The moment lemma: a balanced spread's loss at its highest strike is its moment `m(t)`, so a spread with no loss has `m(t) ≤ 0`. |
+| `SubsetSumInstance.theorem3` | For positive numbers `a_i < T`: some of them sum to `T` exactly when one maximum-loss group of the position costs at most `R = (Σa − T)/2`, with uncovered requirements `a_i/2`. `cost_ge_R`: no group costs less than `R`, so the minimum is `R` then. `subsetSum_iff_filter` is the preprocessing that drops numbers `≥ T`. |
+| `subsetSum_iff_kSubsetSum` | Subset sum reduces to `k`-subset sum, by the replacement in Theorem 4's text. |
+| `KSubsetSumInstance.theorem4` | For positive numbers, `k ≥ 2` and `T ≤ Σa`: exactly `k` of them sum to `T` exactly when one group costs at most `R`, with every uncovered requirement computed by R3 at stock rates (`r3Call`) from the call prices `C(K) = 2k + (K_top − K)/(2k)`. `price_valid` and `price_antitone`: those prices are positive, at most the underlying, at least intrinsic value, falling in the strike and affine. |
+| `SubsetSumInstance.size`, `KSubsetSumInstance.size` | `2n + 1` contracts, at strikes from 1 to `T + 1` and from `2S` to `2S + V`. |
 
 `AxiomCheck.lean` prints the axioms each result uses (only `propext`, `Classical.choice`
 and `Quot.sound`, no `sorryAx`) and checks the example of Theorem 1 by `decide`.
 
 ## What is assumed, not proved
 
-- **The source problem is NP-complete in the strong sense** (Garey and Johnson, problem
-  SP16). Mathlib has no complexity classes or polynomial-time reductions, so this is cited,
-  not stated in Lean.
+- **The source problems are NP-complete**: numerical 3-dimensional matching in the strong
+  sense (Garey and Johnson, problem SP16) and subset sum (SP13). Mathlib has no complexity
+  classes or polynomial-time reductions, so these are cited, not stated in Lean.
 - **The reductions run in polynomial time.** They are explicit closed-form definitions
-  (`N3DM.butterfly`, `N3DM.reduce3`, `N3DM.reduce4`), and their output size is proved
-  bounded, but running time is not formalized.
-- **Membership in NP** (Theorem 1's "NP-complete") is not formalized. The hardness, which is
-  what the results are used for, does not need it.
-- Theorems 3 and 4 (subset sum, one maximum-loss group) and Proposition 5 are not
-  formalized. `tools/check_hardness.py` still checks them by exhaustive search.
+  (`N3DM.butterfly`, `N3DM.reduce3`, `N3DM.reduce4`, `SubsetSumInstance.pos`,
+  `KSubsetSumInstance.pos`), and their output size is proved bounded, but running time is
+  not formalized. Theorems 3 and 4 assume the trivial cases are answered by inspection
+  (`T ≤ a_i` for some `i`; `k < 2` or `T > Σa`); `subsetSum_iff_filter` covers the first.
+- **Membership in NP** is not formalized. The hardness, which is what the results are used
+  for, does not need it.
+- **Proposition 5** (a dynamic program for butterflies and condors on adjacent strikes) is not
+  formalized. It is an algorithm with a 12-counter state, and proofs.md gives it as a sketch;
+  a Lean proof would first need the transitions and their costs written out. Its claim is
+  checked against exhaustive search in `tools/check_hardness.py`.
 
 ## Modeling choices
 
@@ -46,14 +55,23 @@ and `Quot.sound`, no `sorryAx`) and checks the example of Theorem 1 by `decide`.
   is in exactly one spread or uncovered, and the spreads' longs fit inside the position's.
   Repeated spreads are repeated list entries.
 - A matching (`N3DM.HasMatching`) is a multiset of triples whose three projections are
-  exactly `A`, `B` and `C`, each triple summing to the bound.
+  exactly `A`, `B` and `C`, each triple summing to the bound. A subset is a sub-multiset.
+- One maximum-loss group (`IsGroup`, `groupCost`) is any balanced set of the position's
+  contracts, costing its maximum loss plus `U K` for each short left out.
 
 ## Relation to the paper proof
 
 The Lean proofs follow docs/proofs.md: Theorem 1 by its counting argument (two shorts per
 long below `M` only for a butterfly, and fact 3 against condors), Theorem 2 by the moment
-lemma and the bounds on the low-order parts. Formalizing found no gap. The only cases the
-paper leaves implicit are `n = 0`, where both sides hold trivially, and empty spreads.
+lemma and the bounds on the low-order parts. Theorems 3 and 4 take a shorter route than the
+paper's exact maximum loss `max(0, a(A) − lT)`: the hard direction needs only the lower
+bound, the loss at the top strike, and the construction shows no loss by giving each short
+its share `a_i/T` of the low long's gain (`Ladder.decomp`, `Ladder.construct`, shared by
+both theorems). Theorem 4 works in units of `1/(2k)` so that strikes are whole, as the paper
+says is possible, and takes `K_low = 2S`, one admissible choice of its `K_low ≥ 1.1S`.
+
+Formalizing found no gap. The cases the paper leaves implicit are `n = 0`, where both sides
+hold trivially, and empty spreads.
 
 ## Build
 
@@ -81,3 +99,6 @@ takes about half a minute.
 | `PairingHardness/Theorem1.lean` | Theorem 1 |
 | `PairingHardness/Theorem2Three.lean` | Theorem 2 with at most 3 legs |
 | `PairingHardness/Theorem2Four.lean` | The condor instance and Theorem 2 with at most 4 legs |
+| `PairingHardness/Ladder.lean` | One-group requirement, and the position shared by Theorems 3 and 4 |
+| `PairingHardness/Theorem3.lean` | Theorem 3 |
+| `PairingHardness/Theorem4.lean` | Subset sum to `k`-subset sum, R3 prices, Theorem 4 |
