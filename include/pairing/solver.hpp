@@ -26,7 +26,11 @@ struct SolveOptions {
     // Branch-and-bound stops proving optimality once the total is within this fraction of
     // the best possible (owner, 2026-11-25: speed over the last 1%; docs/plan.md). 0 is exact.
     double rel_gap = 0.01;
-    long node_limit = 200'000;  // a hit returns the best assignment found, with its status
+    // A hit returns the best assignment found, with its status. 200,000 until 2026-11-26:
+    // the cases that reach it have weak bounds (nearest_long, overlapping groups), not bad
+    // answers. On the 1,000-case HiGHS test, 20,000 keeps every answer within 1% of HiGHS
+    // and cuts our time from 28 to 4.9 s; the slowest case from 15 to 1.5 s.
+    long node_limit = 20'000;
     // Warm start for a batch (spec §3.2): the root basis of a previous solve whose model
     // had the same shape, as Solution::root_basis returns it. Empty: a cold start.
     LpBasis warm_start{};

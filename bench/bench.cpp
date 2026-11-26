@@ -249,7 +249,7 @@ void orders_table(const RuleSet& r) {
 void dp_table(const RuleSet& r) {
     std::cout << "## Strike dynamic program\n\n"
               << "One-expiration books of n 100-share series, both sides, no stock, straddles off. The DP is exact; "
-                 "branch-and-bound runs exact (`rel_gap` 0) and with the default 1%. The DP stops after generating 5,000,000 states, B&B at 200,000 nodes. "
+                 "branch-and-bound runs exact (`rel_gap` 0) and with the default 1%. The DP stops after generating 5,000,000 states, B&B at 20,000 nodes. "
                  "Excess is over the exact optimum.\n\n"
               << "| Series | Contracts per series | Books | DP: median | max | States generated (median) | DP stopped | B&B exact: "
                  "median | max | B&B 1%: median | max | B&B 1% excess (max) |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n";
@@ -321,7 +321,7 @@ void batch_table(const RuleSet& r) {
                   << num(accounts.size() / warm_s, 4) << " | " << num(cold_it / accounts.size(), 4) << " | "
                   << num(warm_it / accounts.size(), 4) << " |\n";
     }
-    std::cout << "\nBatches use the defaults (`rel_gap` 1%, 200,000 nodes). Warm starts change only the root LP; "
+    std::cout << "\nBatches use the defaults (`rel_gap` 1%, 20,000 nodes). Warm starts change only the root LP; "
                  "branch-and-bound nodes start from their own bases either way.\n\n";
 }
 
