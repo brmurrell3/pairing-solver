@@ -155,7 +155,10 @@ struct Model {
     std::vector<Template> templates;
     int groups = 0;
     int straddle_classes = 0;
-    std::vector<int> capacity_row;  // per option position, then the stock line
+    // Per option position, then the stock line: the capacity row, or -1 when the row was
+    // dropped because one column alone uses it; capacity_column is then that column.
+    std::vector<int> capacity_row;
+    std::vector<int> capacity_column;
 };
 
 Model build_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o = {});

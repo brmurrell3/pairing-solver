@@ -40,6 +40,7 @@ struct LpSolution {
     double objective = 0;
     std::vector<double> x;         // column values
     std::vector<double> row_dual;  // ∂objective/∂(row bound) for a row held at a bound; 0 otherwise
+    std::vector<double> reduced_cost;  // per column; 0 for a basic column
     LpBasis basis;
     int iterations = 0;
 };
@@ -66,6 +67,7 @@ private:
     std::vector<signed char> state_;
     std::vector<int> head_;
     std::vector<double> binv_;  // m×m, row-major
+    std::vector<double> norm_;  // squared norm of each row of binv_, for steepest-edge pricing
     std::vector<double> x_, d_, alpha_;
     int since_refactor_ = 0;
 

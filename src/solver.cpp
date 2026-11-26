@@ -159,8 +159,10 @@ struct Builder {
             if (ok) add_template(kind, {{stock_position, s.shares < 0 ? -s.shares : s.shares}, {i, 1}}, q);
         }
         // R8b–d: a call and a put on one lot each against the shares. Phase 1 needs both
-        // options to cover the same shares and share an expiration; skipping other pairs
-        // only saves calls it would reject.
+        // options to cover the same shares and share an expiration, a conversion needs one
+        // strike and a collar the put's strike below the call's; skipping other pairs only
+        // saves calls it would reject. (Its rejections are exceptions, about 5 µs each:
+        // trying every pair cost 70 ms of the 85 ms model build for a 1,000-series book.)
         for (int c = 0; c < n; ++c) {
             if (p.options[c].option.type != OptionType::call) continue;
             for (int u = 0; u < n; ++u) {
@@ -170,13 +172,15 @@ struct Builder {
                     continue;
                 std::int64_t w = leg(c, 1).option.deliverable;
                 StockLeg s = shares(w);
+                const bool same_strike = call.option.strike == put.option.strike;
                 if (long_stock && call.quantity < 0 && put.quantity > 0) {
-                    if (accepted([&] { return conversion(s, leg(c, 1), leg(u, 1), mk, r); }, q))
+                    if (same_strike && accepted([&] { return conversion(s, leg(c, 1), leg(u, 1), mk, r); }, q))
                         add_template(StructureKind::conversion, {{stock_position, w}, {c, 1}, {u, 1}}, q);
-                    if (accepted([&] { return collar(s, leg(u, 1), leg(c, 1), mk, r); }, q))
+                    if (put.option.strike < call.option.strike &&
+                        accepted([&] { return collar(s, leg(u, 1), leg(c, 1), mk, r); }, q))
                         add_template(StructureKind::collar, {{stock_position, w}, {u, 1}, {c, 1}}, q);
                 } else if (!long_stock && call.quantity > 0 && put.quantity < 0) {
-                    if (accepted([&] { return reverse_conversion(s, leg(c, 1), leg(u, 1), mk, r); }, q))
+                    if (same_strike && accepted([&] { return reverse_conversion(s, leg(c, 1), leg(u, 1), mk, r); }, q))
                         add_template(StructureKind::reverse_conversion, {{stock_position, w}, {c, 1}, {u, 1}}, q);
                 }
             }
@@ -252,6 +256,52 @@ struct Builder {
                 }
             }
         }
+    }
+
+    // A capacity row that only one column uses, with coefficient 1, repeats that column's
+    // upper bound. In a market-maker book about 30% of the rows are of this kind (most
+    // longs pair only through their group member), and every simplex iteration costs
+    // O(rows²) with the dense inverse, so they go. capacity_row is -1 for a dropped row;
+    // the position's shadow price then comes from the column's reduced cost.
+    void drop_single_capacity_rows() {
+        Lp& lp = m.lp;
+        std::vector<int> count(lp.rows(), 0), only(lp.rows(), -1);
+        for (int j = 0; j < lp.cols(); ++j)
+            for (const auto& e : lp.columns[j]) {
+                ++count[e.row];
+                only[e.row] = j;
+            }
+        std::vector<bool> drop(lp.rows(), false);
+        for (int& row : m.capacity_row) {
+            if (row < 0 || count[row] != 1) continue;
+            const int j = only[row];
+            double coef = 0;
+            for (const auto& e : lp.columns[j])
+                if (e.row == row) coef = e.value;
+            if (coef != 1 || lp.col_lo[j] < lp.row_lo[row] || lp.col_up[j] > lp.row_up[row]) continue;
+            drop[row] = true;
+            m.capacity_column.resize(m.capacity_row.size(), -1);
+            m.capacity_column[&row - m.capacity_row.data()] = j;
+            row = -1;
+        }
+        std::vector<int> renumber(lp.rows(), -1);
+        int next = 0;
+        for (int i = 0; i < lp.rows(); ++i)
+            if (!drop[i]) {
+                renumber[i] = next;
+                lp.row_lo[next] = lp.row_lo[i];
+                lp.row_up[next] = lp.row_up[i];
+                ++next;
+            }
+        lp.row_lo.resize(next);
+        lp.row_up.resize(next);
+        for (auto& col : lp.columns) {
+            std::erase_if(col, [&](const Lp::Entry& e) { return drop[e.row]; });
+            for (auto& e : col) e.row = renumber[e.row];
+        }
+        for (int& row : m.capacity_row)
+            if (row >= 0) row = renumber[row];
+        m.capacity_column.resize(m.capacity_row.size(), -1);
     }
 
     // R2b. A box's buy side is a long call and short put at one strike, its sell side a long
@@ -439,6 +489,7 @@ Model build_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     b.long_boxes();
     b.groups();
     for (const auto& c : b.m.column) b.m.priority.push_back(c.kind == Model::Column::aggregate ? 1 : 0);
+    b.drop_single_capacity_rows();
     return std::move(b.m);
 }
 
@@ -572,7 +623,10 @@ Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     // standalone.
     auto shadow = [&](int position, Money unit) {
         int row = m.capacity_row[position];
-        double d = mip.root.basis.state[m.lp.cols() + row] == 2 ? mip.root.row_dual[row] : 0.0;
+        double d = 0;
+        if (row >= 0) d = mip.root.basis.state[m.lp.cols() + row] == 2 ? mip.root.row_dual[row] : 0.0;
+        else if (int j = m.capacity_column[position]; j >= 0 && mip.root.basis.state[j] == 2)
+            d = mip.root.reduced_cost[j];
         return dollars(unit) + d;
     };
     const int n = static_cast<int>(p.options.size());

@@ -74,6 +74,7 @@ DualSimplex::DualSimplex(const Lp& lp) : lp_(lp), m_(lp.rows()), n_(lp.cols()) {
     for (int j = 0; j < n_; ++j) state_[j] = cost_[j] >= 0 ? at_lower : at_upper;
     binv_.assign(static_cast<std::size_t>(m_) * m_, 0.0);
     for (int i = 0; i < m_; ++i) binv_[static_cast<std::size_t>(i) * m_ + i] = -1.0;
+    norm_.assign(m_, 1.0);
 }
 
 void DualSimplex::set_bounds(int col, double lo, double up) {
@@ -100,6 +101,7 @@ double DualSimplex::dot_row(const double* rho, int j) const {
 void DualSimplex::refactor() {
     const std::size_t m = m_;
     std::vector<double> a(m * m, 0.0), inv(m * m, 0.0);
+    std::vector<std::size_t> nz_a, nz_inv;
     for (std::size_t i = 0; i < m; ++i) inv[i * m + i] = 1.0;
     for (std::size_t k = 0; k < m; ++k) {
         int j = head_[k];
@@ -141,17 +143,36 @@ void DualSimplex::refactor() {
             }
         }
         double piv = a[k * m + k];
-        for (std::size_t c = k; c < m; ++c) a[k * m + c] /= piv;
-        for (std::size_t c = 0; c < m; ++c) inv[k * m + c] /= piv;
+        // The basis is sparse, and so are the pivot rows for most of the elimination; only
+        // their nonzeros take part in the row updates.
+        nz_a.clear();
+        nz_inv.clear();
+        for (std::size_t c = k; c < m; ++c)
+            if (a[k * m + c] != 0) {
+                a[k * m + c] /= piv;
+                nz_a.push_back(c);
+            }
+        for (std::size_t c = 0; c < m; ++c)
+            if (inv[k * m + c] != 0) {
+                inv[k * m + c] /= piv;
+                nz_inv.push_back(c);
+            }
         for (std::size_t i = 0; i < m; ++i) {
             if (i == k) continue;
             double f = a[i * m + k];
             if (f == 0) continue;
-            for (std::size_t c = k; c < m; ++c) a[i * m + c] -= f * a[k * m + c];
-            for (std::size_t c = 0; c < m; ++c) inv[i * m + c] -= f * inv[k * m + c];
+            for (std::size_t c : nz_a) a[i * m + c] -= f * a[k * m + c];
+            for (std::size_t c : nz_inv) inv[i * m + c] -= f * inv[k * m + c];
         }
     }
     binv_ = std::move(inv);
+    norm_.assign(m_, 0.0);
+    for (std::size_t k = 0; k < m; ++k) {
+        const double* row = &binv_[k * m];
+        double s = 0;
+        for (std::size_t c = 0; c < m; ++c) s += row[c] * row[c];
+        norm_[k] = s;
+    }
     since_refactor_ = 0;
 }
 
@@ -214,11 +235,9 @@ int DualSimplex::choose_row(bool bland, double slack) const {
         if (v <= 0) continue;
         if (!bland) {
             // Dual steepest edge: the violation over the norm of B⁻¹'s row, the step's
-            // length in dual space; the dense inverse gives the norm exactly.
-            const double* rho = &binv_[static_cast<std::size_t>(k) * m_];
-            double norm = 0;
-            for (int c = 0; c < m_; ++c) norm += rho[c] * rho[c];
-            v = v * v / std::max(norm, 1e-12);
+            // length in dual space. The norms are exact: refactor() computes them and the
+            // inverse's row updates keep them, in the same pass over each row.
+            v = v * v / std::max(norm_[k], 1e-12);
         }
         if (bland ? (best < 0 || j < head_[best]) : v > best_v) {
             best = k;
@@ -245,6 +264,9 @@ LpSolution DualSimplex::finish(LpStatus status, int iterations) const {
     s.row_dual.assign(m_, 0.0);
     for (int i = 0; i < m_; ++i)
         if (state_[n_ + i] != basic) s.row_dual[i] = d_[n_ + i];
+    s.reduced_cost.assign(n_, 0.0);
+    for (int j = 0; j < n_; ++j)
+        if (state_[j] != basic) s.reduced_cost[j] = d_[j];
     s.basis.head = head_;
     s.basis.state = state_;
     return s;
@@ -287,9 +309,12 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
     while (iterations < max_iterations) {
         int r = choose_row(bland);
         if (r < 0) {
-            // Confirm on a fresh factorization before declaring optimality.
+            // Confirm before declaring optimality: recompute the primal and dual values from
+            // the inverse, refreshed when it has taken many updates or a first check failed.
+            // Refactoring on every check cost one O(m³) factorization per solve, which
+            // dominated the rounding dive's many short solves (24 of 30 s on a 1,000-series book).
             if (++checks > 50) break;
-            refactor();
+            if (since_refactor_ >= 16 || (since_refactor_ > 0 && checks > 1)) refactor();
             compute_primal();
             compute_dual();
             // Each refactorization moves reduced costs near zero by rounding noise of about
@@ -390,11 +415,17 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         double* prow = &binv_[static_cast<std::size_t>(r) * m_];
         double piv = w[r];
         for (int c = 0; c < m_; ++c) prow[c] /= piv;
+        norm_[r] /= piv * piv;
         for (int k = 0; k < m_; ++k) {
             if (k == r || w[k] == 0) continue;
             double f = w[k];
             double* row = &binv_[static_cast<std::size_t>(k) * m_];
-            for (int c = 0; c < m_; ++c) row[c] -= f * prow[c];
+            double nk = 0;
+            for (int c = 0; c < m_; ++c) {
+                row[c] -= f * prow[c];
+                nk += row[c] * row[c];
+            }
+            norm_[k] = nk;
         }
 
         ++iterations;
