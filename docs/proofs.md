@@ -293,10 +293,21 @@ the last strike the put tail is empty, so `X_m = min_k P_k`.
 `X` and `Y`, and the final cost `cost + max(0, −X_m)` is nondecreasing in cost and
 nonincreasing in `X_m`. So a state with no lower cost and no higher `X` and `Y` than another
 can be dropped, and each `(C, P')` keeps a Pareto front in (cost, `X`, `Y`). States that can
-no longer reach `C = P' = 0` with the remaining holdings are dropped, and so are states whose
-cost plus the most the remaining shorts can save, plus `max(0, −X)` (`X` never rises), is
-not below the incumbent. The program is exact for whole contracts: every balanced choice is
-some path, and dominance and the bound remove only paths that cannot be better.
+no longer reach `C = P' = 0` with the remaining holdings are dropped.
+
+**Bound.** `X` can rise. A step adds `−P'_k Δ_k` to it, up to the cap `Y_{k+1}`, and that is
+positive while the cumulative puts are net short (`P'_k < 0`). Let `s_k` be the short put
+units held above strike `k`. Every later `P'_j` is at least `P'_k − s_k`, so
+
+    X_m ≤ X_k + r_k,    r_k = (K_m − K_k) · max(0, s_k − P'_k).
+
+A state is dropped when its cost, less the most the remaining shorts can still save, plus
+`max(0, −X_k − r_k)`, is not below the incumbent. Without puts `r_k = 0` and the loss so far
+never falls. (Until 2026-11-26 the bound used `max(0, −X_k)` for every book, as if `X` never
+rose. That could prune the optimum when puts were net short below a strike: with the
+`strike_dp` test's books redrawn, one of the 1,500 came out at 13,719.00 against
+branch-and-bound's 13,343.00.) The program is exact for whole contracts: every balanced
+choice is some path, and dominance and the bound remove only paths that cannot be better.
 
 **Complexity.** Let `N_c` and `N_p` be the total call and put contracts held, `w` the
 deliverable and `τ` the strike tick. `X` and `Y` are multiples of `wτ` with magnitude at
