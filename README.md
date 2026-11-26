@@ -1,26 +1,27 @@
 # pairing-solver
 
-A solver for packing an inventory of positions into offset structures at minimum
-cost. The quantity grid is configurable: whole units, a fixed decimal step, or continuous. The first application is
-strategy-based options margin: pairing a customer's options and stock into the
-spreads, straddles and covered positions that FINRA Rule 4210(f)(2) and Cboe
-Rule 10.3 recognize, so the margin requirement is as low as the rules allow.
+A C++20 library that finds the lowest strategy-based margin requirement for a book of
+options and stock.
 
-The solver is written from scratch: a dense bounded-variable dual simplex with
-branch-and-bound on top, using the problem's structure (strike-walk loss rows, suffix
-pairing rows instead of flows, a compact form for straddles). HiGHS is used only in tests,
-as an independent optimum.
+## Background
 
-Status: Phases 1 to 3 are done and Phase 4 is mostly done ([docs/plan.md](docs/plan.md)).
-- Exact on 3,000 small portfolios against brute force.
-- Within 1% of HiGHS's proven optimum on 1,000 portfolios of up to 40 series, in 17 s
-  against HiGHS's 139 s.
-- A 1,000-series market-maker book solves in 18 s; see [docs/benchmarks.md](docs/benchmarks.md).
+An account that holds options must keep margin against them. Under FINRA Rule 4210(f)(2)
+and Cboe Rule 10.3, positions that offset each other can be grouped into recognized
+structures (spreads, straddles, covered calls and puts, conversions, collars, boxes),
+and each structure carries a lower requirement than its legs held alone. The same book
+can usually be grouped many ways, and the totals differ. This library finds the
+grouping with the lowest total.
 
-## Build and test
+It does that with its own solver: a bounded-variable dual simplex with branch-and-bound
+on top, using the problem's structure to keep the model small. The rules encoded, with
+paragraph citations, are in [docs/rules.md](docs/rules.md); the model and solver design
+are in [docs/spec.md](docs/spec.md).
 
-Requires a C++20 compiler, CMake 3.24 or later and toml++ 3.4. HiGHS 1.16 or later is
-optional and enables the differential tests against it.
+## How to run
+
+Requires a C++20 compiler, CMake 3.24 or later and
+[toml++](https://github.com/marzer/tomlplusplus) 3.4 (`brew install tomlplusplus` or
+`apt install libtomlplusplus-dev`).
 
 ```bash
 cmake -S . -B build
@@ -28,34 +29,16 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-[CLAUDE.md](CLAUDE.md) (also `AGENTS.md`) has the full test list, the sanitizer build and
-the benchmark command.
+Run one fixture file of known answers, or the benchmarks (about 8 minutes):
 
-- [docs/spec.md](docs/spec.md): the problem, the general formulation, and what the
-  solver must produce.
-- [docs/rules.md](docs/rules.md): the margin rules the first application encodes, with
-  paragraph citations and the open interpretation questions.
-- [docs/sources.md](docs/sources.md): rule texts, papers and prior art, and what each
-  one settled.
-- [docs/plan.md](docs/plan.md): build phases and what "done" means for each.
-- [docs/proofs.md](docs/proofs.md): proofs of the structural results the solver relies on,
-  integrality counterexamples, and the strike dynamic program's complexity.
-- [docs/benchmarks.md](docs/benchmarks.md): savings against a greedy baseline, solve times
-  and comparisons with HiGHS.
-- [data/](data/): test fixtures with known answers, and the default rule set.
-- `include/`, `src/`, `tests/`, `bench/`: the C++20 rule engine, solver, tests and
-  benchmarks.
+```bash
+build/pairing_tests fixture data/fixtures/cboe_manual_samples.toml
+build/pairing_bench
+```
 
-## Clean room
-
-This project is built only from public rule texts and published papers. It uses no
-employer code, documents or data.
-
-## Local references
-
-`refs/` holds copies of the rule texts used to write the spec. It is not committed:
-the Cboe manual's license forbids redistribution.
+HiGHS 1.16 or later is optional; when CMake finds it, the build adds differential tests
+against it. [CLAUDE.md](CLAUDE.md) lists every test and the sanitizer build.
 
 ## License
 
-MIT; see [LICENSE](LICENSE). `refs/` is not part of the repository or the license.
+MIT; see [LICENSE](LICENSE).
