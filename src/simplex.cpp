@@ -54,6 +54,20 @@ DualSimplex::DualSimplex(const Lp& lp) : lp_(lp), m_(lp.rows()), n_(lp.cols()) {
     for (const auto& col : lp.columns)
         for (const auto& e : col)
             if (e.row < 0 || e.row >= m_) throw std::invalid_argument("LP entry outside the rows");
+    row_start_.assign(m_ + 1, 0);
+    for (const auto& col : lp.columns)
+        for (const auto& e : col) ++row_start_[e.row + 1];
+    for (int i = 0; i < m_; ++i) row_start_[i + 1] += row_start_[i];
+    row_col_.resize(row_start_[m_]);
+    row_value_.resize(row_start_[m_]);
+    {
+        std::vector<int> fill(row_start_.begin(), row_start_.end() - 1);
+        for (int j = 0; j < n_; ++j)
+            for (const auto& e : lp.columns[j]) {
+                row_col_[fill[e.row]] = j;
+                row_value_[fill[e.row]++] = e.value;
+            }
+    }
     lo_ = lp.col_lo;
     lo_.insert(lo_.end(), lp.row_lo.begin(), lp.row_lo.end());
     up_ = lp.col_up;
@@ -79,6 +93,7 @@ DualSimplex::DualSimplex(const Lp& lp) : lp_(lp), m_(lp.rows()), n_(lp.cols()) {
 }
 
 void DualSimplex::restore(Snapshot s) {
+    primal_current_ = false;
     head_ = std::move(s.head);
     state_ = std::move(s.state);
     binv_ = std::move(s.binv);
@@ -86,9 +101,25 @@ void DualSimplex::restore(Snapshot s) {
     since_refactor_ = s.since_refactor;
 }
 
+// A nonbasic variable whose value moves with its bound moves the basic values with it,
+// x_B -= B⁻¹ a_col · delta, so the next solve need not recompute them all (O(m·nnz(a_col))
+// here against O(m²) there, and a dive changes one bound per solve).
 void DualSimplex::set_bounds(int col, double lo, double up) {
+    if (!primal_current_ || state_[col] == basic) {
+        lo_[col] = lo;
+        up_[col] = up;
+        return;
+    }
+    const double before = x_[col];
     lo_[col] = lo;
     up_[col] = up;
+    const double delta = nonbasic_value(col) - before;
+    if (delta == 0) return;
+    x_[col] += delta;
+    for (int k = 0; k < m_; ++k) {
+        const double w = dot_row(&binv_[static_cast<std::size_t>(k) * m_], col);
+        if (w != 0) x_[head_[k]] -= w * delta;
+    }
 }
 
 double DualSimplex::nonbasic_value(int j) const {
@@ -139,6 +170,7 @@ void DualSimplex::refactor() {
                 }
             }
             if (best < 0) throw std::runtime_error("singular basis could not be repaired");
+            primal_current_ = false;
             state_[head_[k]] = at_lower;
             head_[k] = n_ + best;
             state_[n_ + best] = basic;
@@ -175,6 +207,11 @@ void DualSimplex::refactor() {
         }
     }
     binv_ = std::move(inv);
+    finish_refactor();
+}
+
+void DualSimplex::finish_refactor() {
+    const std::size_t m = m_;
     norm_.assign(m_, 0.0);
     for (std::size_t k = 0; k < m; ++k) {
         const double* row = &binv_[k * m];
@@ -203,6 +240,7 @@ void DualSimplex::compute_primal() {
         for (int i = 0; i < m_; ++i) s += row[i] * r[i];
         x_[head_[k]] = -s;
     }
+    primal_current_ = true;
 }
 
 void DualSimplex::compute_dual() {
@@ -220,6 +258,13 @@ void DualSimplex::compute_dual() {
 // is fixed by moving the variable to its other bound.
 bool DualSimplex::restore_dual_feasibility(double tol) {
     bool flipped = false;
+    struct Stale {
+        bool& flipped;
+        bool& current;
+        ~Stale() {
+            if (flipped) current = false;
+        }
+    } stale{flipped, primal_current_};
     for (int j = 0; j < n_ + m_; ++j) {
         if (state_[j] == basic || lo_[j] == up_[j]) continue;
         if (state_[j] == at_lower && d_[j] < -tol) {
@@ -257,6 +302,7 @@ int DualSimplex::choose_row(bool bland, double slack) const {
 }
 
 void DualSimplex::load(const LpBasis& b) {
+    primal_current_ = false;
     if (static_cast<int>(b.head.size()) != m_ || static_cast<int>(b.state.size()) != n_ + m_)
         throw std::invalid_argument("basis has the wrong size");
     head_ = b.head;
@@ -285,7 +331,7 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
     for (int j = 0; j < n_ + m_; ++j)
         if (lo_[j] > up_[j]) return finish(LpStatus::infeasible, 0);
     if (!start.empty() && (start.head != head_ || start.state != state_)) load(start);
-    compute_primal();
+    if (!primal_current_) compute_primal();
     compute_dual();
     if (restore_dual_feasibility(dual_tol)) compute_primal();
 
@@ -355,11 +401,20 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         // move in the direction delta_j = -s·alpha_j allows; the ratio d_j/delta_j is how
         // far the duals can move before d_j changes sign. Harris's two passes trade a
         // dual_tol slack in that ratio for the largest available pivot.
+        //
+        // The pivot row alpha = rho·[A, -I] is formed row by row from rho's nonzeros, which
+        // are about 20% of rho on a 1,000-series book; column by column it cost a pass over
+        // every nonzero of A per iteration.
+        std::fill(alpha_.begin(), alpha_.begin() + n_, 0.0);
+        for (int i = 0; i < m_; ++i) {
+            const double v = rho[i];
+            alpha_[n_ + i] = -v;
+            if (v == 0) continue;
+            for (int e = row_start_[i]; e < row_start_[i + 1]; ++e) alpha_[row_col_[e]] += v * row_value_[e];
+        }
         double theta_max = lp_infinity;
         for (int j = 0; j < n_ + m_; ++j) {
-            if (state_[j] == basic) continue;
-            alpha_[j] = dot_row(rho, j);
-            if (lo_[j] == up_[j]) continue;
+            if (state_[j] == basic || lo_[j] == up_[j]) continue;
             double delta = -s * alpha_[j];
             bool eligible = state_[j] == at_lower ? delta > pivot_tol : delta < -pivot_tol;
             if (eligible && !bland) theta_max = std::min(theta_max, (d_[j] * sign(delta) + dual_tol) / std::fabs(delta));

@@ -161,12 +161,21 @@ struct Builder {
                 straddles(shorts);
             }
         }
-        for (int i = 0; i < n && straddles_on; ++i) {
-            if (!is(i, OptionType::put, -1)) continue;
-            for (int j = 0; j < n; ++j) {
-                if (!is(j, OptionType::call, -1)) continue;
-                std::int64_t wi = leg(i, 1).option.deliverable, wj = leg(j, 1).option.deliverable;
-                if (wi == wj && compact.count(std::llabs(leg(i, 1).units()))) continue;
+        // Per-lot deliverables and units, computed once: leg() copies the position.
+        std::vector<int> short_puts, short_calls;
+        std::vector<std::int64_t> lot_w(n), lot_units(n);
+        for (int i = 0; i < n; ++i) {
+            const OptionLeg one = leg(i, 1);
+            lot_w[i] = one.option.deliverable;
+            lot_units[i] = std::llabs(one.units());
+            if (is(i, OptionType::put, -1)) short_puts.push_back(i);
+            if (is(i, OptionType::call, -1)) short_calls.push_back(i);
+        }
+        for (int i : short_puts) {
+            if (!straddles_on) break;
+            for (int j : short_calls) {
+                std::int64_t wi = lot_w[i], wj = lot_w[j];
+                if (wi == wj && compact.count(lot_units[i])) continue;
                 std::int64_t g = std::gcd(wi, wj), qi = wj / g, qj = wi / g;
                 if (accepted([&] { return short_straddle(leg(i, qi), leg(j, qj), mk, r); }, q))
                     add_template(StructureKind::straddle, {{i, qi}, {j, qj}}, q);
@@ -353,12 +362,16 @@ struct Builder {
             return x.strike == y.strike && x.expiry == y.expiry && x.deliverable == y.deliverable;
         };
         std::vector<std::pair<int, int>> buy, sell;
-        for (int a = 0; a < n; ++a)
-            for (int b = 0; b < n; ++b) {
-                if (!same_series_but_type(a, b)) continue;
-                if (is(a, OptionType::call, +1) && is(b, OptionType::put, -1)) buy.push_back({a, b});
-                if (is(a, OptionType::put, +1) && is(b, OptionType::call, -1)) sell.push_back({a, b});
-            }
+        // Candidates share a strike, so only positions at one strike are compared.
+        std::map<Money, std::vector<int>> at_strike;
+        for (int a = 0; a < n; ++a) at_strike[p.options[a].option.strike].push_back(a);
+        for (const auto& [k, here] : at_strike)
+            for (int a : here)
+                for (int b : here) {
+                    if (!same_series_but_type(a, b)) continue;
+                    if (is(a, OptionType::call, +1) && is(b, OptionType::put, -1)) buy.push_back({a, b});
+                    if (is(a, OptionType::put, +1) && is(b, OptionType::call, -1)) sell.push_back({a, b});
+                }
         Requirement q;
         for (auto [lc, sp] : buy)
             for (auto [lp, sc] : sell) {
@@ -389,8 +402,9 @@ struct Builder {
         for (int i : candidates) {
             auto& v = value[i];
             double worst = 0, best = 0;
+            const std::vector<OptionLeg> one = {leg(i, 1)};
             for (Money k : strikes) {
-                v.push_back(dollars(payoff_at({leg(i, 1)}, k)));
+                v.push_back(dollars(payoff_at(one, k)));
                 worst = std::min(worst, v.back());
                 best = std::max(best, v.back());
             }

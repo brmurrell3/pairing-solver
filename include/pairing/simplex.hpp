@@ -74,16 +74,20 @@ private:
     const Lp& lp_;
     int m_, n_;
     std::vector<double> lo_, up_, cost_;  // over columns then logicals
+    std::vector<int> row_start_, row_col_;  // A by rows, for the pivot row
+    std::vector<double> row_value_;
     std::vector<signed char> state_;
     std::vector<int> head_;
     std::vector<double> binv_;  // m×m, row-major
     std::vector<double> norm_;  // squared norm of each row of binv_, for steepest-edge pricing
     std::vector<double> x_, d_, alpha_;
     int since_refactor_ = 0;
+    bool primal_current_ = false;  // x_ matches the basis and bounds (pivots and set_bounds keep it)
 
     double nonbasic_value(int j) const;
     double dot_row(const double* rho, int j) const;
     void refactor();
+    void finish_refactor();
     void compute_primal();
     void compute_dual();
     bool restore_dual_feasibility(double tol);
