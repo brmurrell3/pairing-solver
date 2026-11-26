@@ -833,9 +833,160 @@ Book::Book(Portfolio p, RuleSet r, SolveOptions o) : p_(std::move(p)), r_(std::m
     SolveOptions cold = o_;
     cold.warm_start = {};
     s_ = solve_model(p_, r_, cold, *model_, simplex_.get(), nullptr, &x_);
+    index_model();
 }
 
 Book::~Book() = default;
+
+void Book::index_model() {
+    const Model& m = *model_;
+    const Lp& lp = m.lp;
+    const int n = static_cast<int>(p_.options.size());
+    std::vector<int> position_of_row(lp.rows(), -1);
+    for (int i = 0; i <= n; ++i)
+        if (m.capacity_row[i] >= 0) position_of_row[m.capacity_row[i]] = i;
+    uses_.assign(n + 1, {});
+    loss_column_.assign(m.groups, -1);
+    row_role_.assign(lp.rows(), 0);
+    aggregate_of_.assign(lp.rows(), -1);
+    for (int j = 0; j < lp.cols(); ++j) {
+        const auto& c = m.column[j];
+        if (c.kind == Model::Column::loss) {
+            loss_column_[c.index] = j;
+            for (const auto& e : lp.columns[j]) row_role_[e.row] = 1;
+        }
+        if (c.kind == Model::Column::aggregate)
+            for (const auto& e : lp.columns[j]) {
+                row_role_[e.row] = 2;
+                aggregate_of_[e.row] = j;
+            }
+        bool added = false;
+        for (const auto& e : lp.columns[j])
+            if (position_of_row[e.row] >= 0) {
+                uses_[position_of_row[e.row]].push_back(j);
+                added = true;
+            }
+        if (!added && c.kind == Model::Column::member) uses_[c.position].push_back(j);
+    }
+    for (int i = 0; i <= n; ++i)
+        if (m.capacity_row[i] < 0 && m.capacity_column[i] >= 0 &&
+            std::find(uses_[i].begin(), uses_[i].end(), m.capacity_column[i]) == uses_[i].end())
+            uses_[i].push_back(m.capacity_column[i]);
+}
+
+// A resize changes one position's capacity, and with it only the bounds that build_model
+// derives from it: the capacity row (or column), the upper bounds of the columns that use
+// the position, its groups' loss column and loss rows, the suffix rows it enters, and the
+// share-size aggregates over it. Updating those in place skips rebuilding the model (5.8 ms
+// at 1,000 series) and comparing its shape. Suffix rows the position does not enter keep
+// their old bound, which stays valid (it is implied by the members). With keep, the book
+// takes the change; otherwise every bound is put back.
+Solution Book::price_resize(int i, std::int64_t quantity, bool keep) {
+    Model& m = *model_;
+    Lp& lp = m.lp;
+    const std::int64_t lots = m.lots_per_contract;
+    const OptionLeg& pos = p_.options[i];
+    const double old_cap = static_cast<double>(std::llabs(pos.quantity) * lots);
+    const double new_cap = static_cast<double>(std::llabs(quantity) * lots);
+    const double delta = new_cap - old_cap;
+    Portfolio q = p_;
+    q.options[i].quantity = quantity;
+    auto cap = [&](int position) {
+        return position == stock_position ? static_cast<double>(std::llabs(q.stock.shares))
+                                          : static_cast<double>(std::llabs(q.options[position].quantity) * lots);
+    };
+    struct Saved {
+        bool row;
+        int index;
+        double lo, up;
+    };
+    std::vector<Saved> saved;
+    auto set_col = [&](int j, double lo, double up) {
+        saved.push_back({false, j, lp.col_lo[j], lp.col_up[j]});
+        lp.col_lo[j] = lo;
+        lp.col_up[j] = up;
+        simplex_->set_bounds(j, lo, up);
+    };
+    auto set_row_up = [&](int r, double up) {
+        saved.push_back({true, r, lp.row_lo[r], lp.row_up[r]});
+        lp.row_up[r] = up;
+        simplex_->set_bounds(lp.cols() + r, lp.row_lo[r], up);
+    };
+    if (m.capacity_row[i] >= 0) set_row_up(m.capacity_row[i], new_cap);
+    std::vector<int> aggregates;
+    for (int j : uses_[i]) {
+        const auto& c = m.column[j];
+        switch (c.kind) {
+            case Model::Column::template_unit: {
+                double ub = lp_infinity;
+                for (const auto& l : m.templates[c.index].legs) ub = std::min(ub, cap(l.position) / static_cast<double>(l.quantity));
+                set_col(j, lp.col_lo[j], ub);
+                break;
+            }
+            case Model::Column::member: {
+                set_col(j, lp.col_lo[j], new_cap);
+                double worst = 0, best = 0;
+                for (const auto& e : lp.columns[j])
+                    if (row_role_[e.row] == 1) {
+                        worst = std::min(worst, e.value);
+                        best = std::max(best, e.value);
+                    }
+                const int t = loss_column_[c.index];
+                const double t_delta = -worst * delta;
+                set_col(t, lp.col_lo[t], lp.col_up[t] + t_delta);
+                for (const auto& e : lp.columns[t]) set_row_up(e.row, lp.row_up[e.row] + t_delta + best * delta);
+                for (const auto& e : lp.columns[j]) {
+                    if (row_role_[e.row] == 2) aggregates.push_back(aggregate_of_[e.row]);
+                    // Suffix rows: bounded by the long units, with this member's coefficient.
+                    if (row_role_[e.row] == 0 && pos.quantity > 0 && e.row != m.capacity_row[i] && lp.row_lo[e.row] == 0 &&
+                        lp.row_up[e.row] > 0 && std::isfinite(lp.row_up[e.row]))
+                        set_row_up(e.row, lp.row_up[e.row] + e.value * delta);
+                }
+                break;
+            }
+            default:  // straddle sides, or the position's only column
+                set_col(j, lp.col_lo[j], new_cap);
+        }
+    }
+    for (int a : aggregates) {
+        const auto& e = lp.columns[a].front();
+        double lo = 0, up = 0;
+        for (int j = 0; j < lp.cols(); ++j) {
+            if (j == a) continue;
+            for (const auto& f : lp.columns[j])
+                if (f.row == e.row) (f.value > 0 ? up : lo) += f.value * lp.col_up[j];
+        }
+        const double k = -e.value;
+        set_col(a, std::ceil(lo / k), std::floor(up / k));
+    }
+    const Money unit = separate({lot_leg(pos, 1, lots)}, p_.market, r_).total();
+    const Money old_constant = m.constant;
+    m.constant += unit * static_cast<std::int64_t>(delta);
+
+    SolveOptions so = o_;
+    so.warm_start = {};
+    std::vector<double> x;
+    const bool fits = feasible(lp, x_);
+    Solution s = solve_model(q, r_, so, m, simplex_.get(), fits ? &x_ : nullptr, &x, &x_);
+    if (keep) {
+        p_ = std::move(q);
+        s_ = s;
+        x_ = std::move(x);
+    } else {
+        for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
+            if (it->row) {
+                lp.row_up[it->index] = it->up;
+                simplex_->set_bounds(lp.cols() + it->index, it->lo, it->up);
+            } else {
+                lp.col_lo[it->index] = it->lo;
+                lp.col_up[it->index] = it->up;
+                simplex_->set_bounds(it->index, it->lo, it->up);
+            }
+        }
+        m.constant = old_constant;
+    }
+    return s;
+}
 
 Portfolio Book::after(const OptionLeg& order) const {
     Portfolio q = p_;
@@ -948,8 +1099,12 @@ Solution Book::what_if(const OptionLeg& order) {
         const Option &a = p_.options[i].option, &b = order.option;
         if (a.underlying == b.underlying && a.type == b.type && a.strike == b.strike && a.expiry == b.expiry &&
             a.style == b.style && a.listing == b.listing && a.deliverable == b.deliverable && a.product == b.product &&
-            p_.options[i].quantity + order.quantity == 0 && p_.options.size() > 1)
-            return price_close(static_cast<int>(i));
+            p_.options.size() > 1) {
+            const std::int64_t q = p_.options[i].quantity, after = q + order.quantity;
+            if (after == 0) return price_close(static_cast<int>(i));
+            if ((after > 0) == (q > 0) && order.value == p_.options[i].value)
+                return price_resize(static_cast<int>(i), after, false);
+        }
     }
     Trial t = price(after(order));
     if (t.shape_kept) restore_bounds();
@@ -978,10 +1133,24 @@ void Book::commit(Trial t) {
     } else {
         model_ = std::move(t.model);
         simplex_ = std::make_unique<DualSimplex>(model_->lp);
+        index_model();
     }
 }
 
-void Book::fill(const OptionLeg& order) { commit(price(after(order))); }
+void Book::fill(const OptionLeg& order) {
+    for (std::size_t i = 0; i < p_.options.size(); ++i) {
+        const Option &a = p_.options[i].option, &b = order.option;
+        if (a.underlying == b.underlying && a.type == b.type && a.strike == b.strike && a.expiry == b.expiry &&
+            a.style == b.style && a.listing == b.listing && a.deliverable == b.deliverable && a.product == b.product) {
+            const std::int64_t q = p_.options[i].quantity, after = q + order.quantity;
+            if (after != 0 && (after > 0) == (q > 0) && order.value == p_.options[i].value) {
+                price_resize(static_cast<int>(i), after, true);
+                return;
+            }
+        }
+    }
+    commit(price(after(order)));
+}
 
 void Book::fill_stock(std::int64_t shares) { commit(price(after_stock(shares))); }
 

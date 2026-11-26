@@ -212,6 +212,8 @@ private:
     Portfolio after_stock(std::int64_t shares) const;
     Trial price(Portfolio q);
     Solution price_close(int position);
+    Solution price_resize(int position, std::int64_t quantity, bool keep);
+    void index_model();
     void restore_bounds();
     void commit(Trial t);
 
@@ -222,6 +224,12 @@ private:
     std::unique_ptr<DualSimplex> simplex_;  // refers to model_->lp
     Solution s_;
     std::vector<double> x_;  // the model's assignment for s_
+    // Built by index_model() for price_resize: the columns that use each position, and
+    // what each row is (0 other, 1 loss, 2 share-size aggregate).
+    std::vector<std::vector<int>> uses_;
+    std::vector<int> loss_column_;     // per group
+    std::vector<signed char> row_role_;
+    std::vector<int> aggregate_of_;    // per row: its aggregate column, or -1
 };
 
 // Reads an integer solution (values within 1e-6 of integers) of a model back into
