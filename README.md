@@ -1,6 +1,7 @@
 # pairing-solver
 
 [![CI](https://github.com/brmurrell3/pairing-solver/actions/workflows/ci.yml/badge.svg)](https://github.com/brmurrell3/pairing-solver/actions/workflows/ci.yml)
+[![Lean](https://github.com/brmurrell3/pairing-solver/actions/workflows/lean.yml/badge.svg)](https://github.com/brmurrell3/pairing-solver/actions/workflows/lean.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A C++20 library that finds the lowest strategy-based margin requirement for a book of
@@ -19,7 +20,8 @@ It does that with its own solver: a bounded-variable dual simplex on a sparse LU
 factorization, with branch-and-bound on top, using the problem's structure to keep the
 model small. The rules encoded, with paragraph citations, are in
 [docs/rules.md](docs/rules.md); the model and solver design in [docs/spec.md](docs/spec.md);
-proofs, including when the problem is NP-hard, in [docs/proofs.md](docs/proofs.md).
+proofs, including when the problem is NP-hard, in [docs/proofs.md](docs/proofs.md). The
+hardness reductions are also machine-checked in Lean 4 ([lean/README.md](lean/README.md)).
 
 ## Results
 
