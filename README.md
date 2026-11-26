@@ -21,7 +21,7 @@ factorization, with branch-and-bound on top, using the problem's structure to ke
 model small. The rules encoded, with paragraph citations, are in
 [docs/rules.md](docs/rules.md); the model and solver design in [docs/spec.md](docs/spec.md);
 proofs, including when the problem is NP-hard, in [docs/proofs.md](docs/proofs.md). The
-hardness reductions are also machine-checked in Lean 4 ([lean/README.md](lean/README.md)).
+strong NP-hardness reductions (Theorems 1 and 2) are also machine-checked in Lean 4 ([lean/README.md](lean/README.md)).
 
 ## Results
 
