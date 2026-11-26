@@ -1,7 +1,7 @@
 #pragma once
 
-// Seeded portfolio generators for the Phase 3 benchmarks (data/README.md, "What still has
-// to be built"). Marks come from a synthetic chain priced with Black-Scholes, so every
+// Seeded portfolio generators for the Phase 3 benchmarks (data/README.md, "Generators").
+// Marks come from a synthetic chain priced with Black-Scholes, so every
 // book is deterministic, reproducible and safe to publish.
 
 #include <algorithm>

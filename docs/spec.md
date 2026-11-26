@@ -138,7 +138,7 @@ The rule set is data, not code, so stricter broker rules are configuration:
 The project writes its own solver; it does not wrap a general-purpose one.
 
 1. **Exact baseline:**
-   - A dense, bounded-variable dual simplex sized for one subproblem.
+   - A bounded-variable dual simplex sized for one subproblem, with dual steepest-edge pricing on a sparse LU basis factorization. A large book's basis is nearly triangular (1,160 of 1,182 columns peel as singletons on a 1,000-series book), so the factorization has almost no fill. It began as a dense explicit inverse; docs/plan.md, Phase 6, records the change.
    - The rows are the strike-walk loss rows, the two balance equalities and the suffix pairing inequalities; every variable is boxed between zero and its holding.
    - Branch-and-bound on top of the simplex for grid quantities.
    - Dual simplex suits a batch: moving to another account changes bounds, not coefficients, so the previous basis stays dual feasible.

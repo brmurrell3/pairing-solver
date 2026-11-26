@@ -29,6 +29,5 @@ use that to test the spread logic without prices.
 
 ## Private data
 
-Real option chains, such as the Schwab API captures in `vol-infra`, may be used for
-local benchmarks under `data/private/`, which is ignored by git. They are never
-committed or published.
+Real option chains may be used for local benchmarks under `data/private/`, which is
+ignored by git. They are never committed or published.

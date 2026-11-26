@@ -310,8 +310,8 @@ struct Builder {
 
     // A capacity row that only one column uses, with coefficient 1, repeats that column's
     // upper bound. In a market-maker book about 30% of the rows are of this kind (most
-    // longs pair only through their group member), and every simplex iteration costs
-    // O(rows²) with the dense inverse, so they go. capacity_row is -1 for a dropped row;
+    // longs pair only through their group member). Each row costs every basis
+    // factorization and solve a little, so they go. capacity_row is -1 for a dropped row;
     // the position's shadow price then comes from the column's reduced cost.
     void drop_single_capacity_rows() {
         Lp& lp = m.lp;
