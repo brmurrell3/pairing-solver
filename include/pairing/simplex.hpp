@@ -60,6 +60,16 @@ public:
     // otherwise the previous solve's.
     LpSolution solve(const LpBasis& start = {});
 
+    // The basis with its inverse, so a caller can return to it without refactoring.
+    struct Snapshot {
+        std::vector<int> head;
+        std::vector<signed char> state;
+        std::vector<double> binv, norm;
+        int since_refactor = 0;
+    };
+    Snapshot save() const { return {head_, state_, binv_, norm_, since_refactor_}; }
+    void restore(Snapshot s);
+
 private:
     const Lp& lp_;
     int m_, n_;
@@ -125,5 +135,10 @@ struct MipSolution {
 // re-solve from the current basis. Every node is pruned or explored, so the result is
 // optimal to within the pruning tolerance unless the node limit stops the search first.
 MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, const MipOptions& o);
+// The same on the caller's simplex, built on lp with its bounds, so a search starts from the
+// basis and inverse the last one left (a pre-trade check re-solving one book after each
+// order, spec §3.2). On return the simplex is back at the root's optimal basis, with the
+// integer columns' bounds reset to lp's.
+MipSolution branch_and_bound(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, const MipOptions& o);
 
 }  // namespace pairing

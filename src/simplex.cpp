@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cstdlib>
+#include <optional>
 #include <stdexcept>
 
 namespace pairing {
@@ -75,6 +76,14 @@ DualSimplex::DualSimplex(const Lp& lp) : lp_(lp), m_(lp.rows()), n_(lp.cols()) {
     binv_.assign(static_cast<std::size_t>(m_) * m_, 0.0);
     for (int i = 0; i < m_; ++i) binv_[static_cast<std::size_t>(i) * m_ + i] = -1.0;
     norm_.assign(m_, 1.0);
+}
+
+void DualSimplex::restore(Snapshot s) {
+    head_ = std::move(s.head);
+    state_ = std::move(s.state);
+    binv_ = std::move(s.binv);
+    norm_ = std::move(s.norm);
+    since_refactor_ = s.since_refactor;
 }
 
 void DualSimplex::set_bounds(int col, double lo, double up) {
@@ -306,6 +315,7 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         return true;
     };
     std::vector<double> w(m_);
+    int confirmed_row = -1;  // a row whose infeasibility certificate passed the residual check
     while (iterations < max_iterations) {
         int r = choose_row(bland);
         if (r < 0) {
@@ -374,8 +384,19 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         }
         if (q < 0) {
             // No variable can repair row r: the dual is unbounded, so the primal is
-            // infeasible. Confirm on a fresh factorization first.
-            if (since_refactor_ > 0) {
+            // infeasible. Confirm first: when row r of the inverse times the basis is the unit
+            // row to rounding, on primal values recomputed from it (O(m²)); otherwise on a
+            // fresh factorization (O(m³); on a 1,000-series book this confirmation was most of
+            // the refactorizations in the rounding dive, where failed fixes are common).
+            if (since_refactor_ > 0 && confirmed_row != r) {
+                double residual = 0;
+                for (int k = 0; k < m_; ++k)
+                    residual = std::max(residual, std::fabs(dot_row(rho, head_[k]) - (k == r ? 1.0 : 0.0)));
+                if (residual < 1e-9) {
+                    confirmed_row = r;
+                    compute_primal();
+                    continue;
+                }
                 refactor();
                 compute_primal();
                 compute_dual();
@@ -429,6 +450,7 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         }
 
         ++iterations;
+        confirmed_row = -1;
         if (++since_refactor_ >= refactor_every) {
             refactor();
             compute_primal();
@@ -495,9 +517,19 @@ namespace {
 // dive backtracks to earlier fixes' other sides, within a budget. Fixing one count of a
 // linked set (the share-size aggregates of one balance row) can leave the last one no
 // integer value, which only an earlier choice can repair. Restores the bounds.
+//
+// Hold::all holds every integer column already on the grid at its value first, and the
+// dive rounds only the rest. On a 1,000-series book the root LP has 15 fractional columns
+// among 4,679; rounding one at a time while the others stay free let each fix move many
+// more off the grid, and the dive took 300 to 450 LP solves. Holding the rest takes about
+// 12. Held columns can leave no way to round a linked set (balance and suffix rows), so
+// Hold::at_bounds holds only those at a bound and leaves on-grid interior values free to
+// absorb the rounding; the caller tries that next, then a dive that holds nothing.
+enum class Hold { none, all, at_bounds };
+
 bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, const std::vector<int>& priority,
           const std::vector<double>* guide, LpSolution sol, double integer_tol, long& iterations, std::vector<double>& x,
-          double& objective) {
+          double& objective, Hold hold = Hold::none) {
     struct Fix {
         int col;
         double lo, up;  // the bounds before the fix
@@ -517,6 +549,23 @@ bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, 
         sol = std::move(next);
         return true;
     };
+    struct Held {
+        int col;
+        double lo, up;
+    };
+    std::vector<Held> held;
+    if (hold != Hold::none) {
+        for (int j = 0; j < lp.cols(); ++j) {
+            if (!integer[j]) continue;
+            const double v = std::round(sol.x[j]);
+            if (std::fabs(sol.x[j] - v) > integer_tol) continue;
+            if (hold == Hold::at_bounds && v != simplex.lower(j) && v != simplex.upper(j)) continue;
+            held.push_back({j, simplex.lower(j), simplex.upper(j)});
+            simplex.set_bounds(j, v, v);
+        }
+        // With the rest held each LP is small, so trying the other sides is cheap.
+        backtracks = 40;
+    }
     for (long steps = 0; steps <= 4L * lp.cols() + 100; ++steps) {
         int pick = -1, level = 0;
         double nearest = 1;
@@ -566,12 +615,18 @@ bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, 
         if (!resumed) break;
     }
     for (auto it = fixes.rbegin(); it != fixes.rend(); ++it) simplex.set_bounds(it->col, it->lo, it->up);
+    for (const Held& h : held) simplex.set_bounds(h.col, h.lo, h.up);
     return found;
 }
 
 }  // namespace
 
 MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, const MipOptions& o) {
+    DualSimplex simplex(lp);
+    return branch_and_bound(simplex, lp, integer, o);
+}
+
+MipSolution branch_and_bound(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, const MipOptions& o) {
     // Values this close to an integer count as integral; callers round them.
     constexpr double integer_tol = 1e-6;
     // A node is its bound changes from the root. Any basis stays dual feasible when only
@@ -587,7 +642,6 @@ MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, con
     auto worse = [](const Node& a, const Node& b) { return a.bound > b.bound; };
     std::vector<Node> heap;  // open nodes, best bound on top
 
-    DualSimplex simplex(lp);
     MipSolution out;
     double incumbent = lp_infinity;
     if (!o.start.empty()) {
@@ -604,6 +658,11 @@ MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, con
         if (b < incumbent - std::max(o.abs_tol, o.rel_gap * std::fabs(o.offset + b))) return false;
         pruned_bound = std::min(pruned_bound, b);
         return true;
+    };
+    // prune() without recording the bound, for a test that is not a pruning.
+    auto prune_test = [&](double b) {
+        return b != -lp_infinity && incumbent != lp_infinity &&
+               b >= incumbent - std::max(o.abs_tol, o.rel_gap * std::fabs(o.offset + b));
     };
     auto pick_branch = [&](const LpSolution& sol) {
         int branch = -1, level = 0;
@@ -642,6 +701,21 @@ MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, con
     Node current{{}, -lp_infinity};
     bool have_current = true, root = true;
     bool searched = false;  // the incumbent came from the search, not from o.start
+    // The caller's simplex gets the root's bounds and optimal basis back on every return,
+    // so the next search on it (the next order's) starts at most a few pivots away. Left
+    // at the last node's basis instead, an order's root took 270 to 1,400 iterations on a
+    // 1,000-series book; from the root's, 0 to 18.
+    struct Restore {
+        DualSimplex& s;
+        const Lp& lp;
+        const std::vector<bool>& integer;
+        std::optional<DualSimplex::Snapshot> root;
+        ~Restore() {
+            for (int j = 0; j < lp.cols(); ++j)
+                if (integer[j]) s.set_bounds(j, lp.col_lo[j], lp.col_up[j]);
+            if (root) s.restore(std::move(*root));
+        }
+    } restore{simplex, lp, integer, std::nullopt};
     for (;;) {
         if (!have_current) {
             while (!heap.empty() && prune(heap.front().bound)) {
@@ -673,14 +747,23 @@ MipSolution branch_and_bound(const Lp& lp, const std::vector<bool>& integer, con
         if (root) {
             out.root = sol;
             root = false;
+            if (sol.status == LpStatus::optimal) restore.root = simplex.save();
             if (sol.status == LpStatus::infeasible || sol.status == LpStatus::unbounded) {
                 out.status = sol.status == LpStatus::infeasible ? MipStatus::infeasible : MipStatus::unbounded;
                 return out;
             }
             std::vector<double> x;
             double obj = 0;
-            if (sol.status == LpStatus::optimal &&
-                dive(simplex, lp, integer, o.priority, nullptr, sol, integer_tol, out.iterations, x, obj) && obj < incumbent) {
+            // The dive that holds nothing can take seconds on a large book; it is skipped
+            // when the incumbent passed in (a pre-trade check's previous pairing) is already
+            // within the gap of the root bound.
+            auto try_dive = [&](Hold h) {
+                return dive(simplex, lp, integer, o.priority, nullptr, sol, integer_tol, out.iterations, x, obj, h);
+            };
+            bool found = sol.status == LpStatus::optimal &&
+                         (try_dive(Hold::all) || try_dive(Hold::at_bounds) ||
+                          (!(o.start.size() && incumbent < lp_infinity && prune_test(sol.objective)) && try_dive(Hold::none)));
+            if (found && obj < incumbent) {
                 incumbent = obj;
                 out.x = std::move(x);
                 searched = true;
