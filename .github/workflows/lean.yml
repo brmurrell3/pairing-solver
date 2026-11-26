@@ -1,0 +1,27 @@
+name: Lean
+
+on:
+  push:
+    branches: [main]
+    paths: ['lean/**', '.github/workflows/lean.yml']
+  pull_request:
+    paths: ['lean/**', '.github/workflows/lean.yml']
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the pinned toolchain, fetches the Mathlib cache and runs `lake build`.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean
+          build-args: --wfail
+
+      - name: No sorry in the main results
+        working-directory: lean
+        run: |
+          lake env lean AxiomCheck.lean | tee axioms.txt
+          ! grep -q sorryAx axioms.txt
