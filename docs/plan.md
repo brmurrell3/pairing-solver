@@ -17,7 +17,7 @@
 ## Inputs still open
 
 1. **Q1 in rules.md:** where the recollection of two-decimal partial contracts comes from. The grid is a policy until this is answered.
-2. **Papers:** download the two Matsypura and Timkovsky working papers by hand (automated fetches get 403), and Rudd and Schroeder if a library copy is available. Put them in `refs/`.
+2. **Papers:** the three Matsypura and Timkovsky papers are in `refs/` and read (2026-11-26; sources.md). Rudd and Schroeder (1982) is still missing: paywalled, needs a library copy.
 3. **Toolchain:** compiler and TOML parser confirmed 2026-11-25 (Apple clang 21, CMake 4.4, toml++ 3.4.0 from Homebrew). No test framework is installed; Phase 1 uses a small harness in `tests/check.hpp`. Still open: HiGHS as a test-only dependency (Phase 2).
 
 ## Phase 1: rule engine (done 2026-11-25)
@@ -133,7 +133,8 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 - **Integrality:** the `solver` test keeps two counterexamples: three calls on one deliverable (gap 0.67%) and a one-lot iron condor (0.37%). No 2-series book of 78,000 searched had a gap. No sufficient condition beyond two series yet (proofs.md, "Integrality").
 - **Straddles:** done. Above 256 short put-call pairs, the model uses one cheap and one dear column per short and suffix rows instead of one template per pair (proofs.md, "Compact short straddles"). The `solver` test `compact_straddles` checks equal totals against the per-pair form on 400 random books. The 1,000-series book went from 58,601 to 1,765 columns and from 153 s to 18.0 s; 300 series from 1.8 s to 0.73 s median. Below the threshold the per-pair form stays, because the compact form slowed small books (the 1,000 x 40 HiGHS run took 40 s instead of 18 s with it everywhere).
 - **Dynamic program:** done for one max-loss group: one expiration, style, listing and deliverable, options only, no straddles (`solve_strike_dp`, `src/dp.cpp`; proofs.md, "Strike dynamic program"). It is exact and pseudo-polynomial, `O(m · N_c N_p · R² · q²)` states with `R` the payoff range over the tick. The `solver` test `strike_dp` matches exact branch-and-bound with straddles off on 1,500 random books. It is slower everywhere measured (benchmarks.md, "Strike dynamic program"): 82 ms median against 0.09 ms at 10 series of up to 50 contracts, and at 100 series it hits its 5,000,000-state limit on every book while branch-and-bound takes 9 to 50 ms. Branch-and-bound stays the solver; the DP is kept as an independent exact check. Multiple expirations, straddles and stock are not in the DP, since each adds a state dimension per expiration or per rank.
-- **Open:** whether the one-group problem is NP-hard; template-only hardness (needs the Matsypura and Timkovsky papers, Inputs item 2).
+- **Template-only hardness:** no cited result exists. Matsypura and Timkovsky (05/2010, Introduction; 04/2010, concluding remarks) state that the complexity with three- and four-leg spreads on individual options is unknown, and give only a heuristic and a polynomial method for portfolios already split into two-leg spreads (sources.md).
+- **Open:** whether the one-group problem is NP-hard, and whether template-only pairing is; neither has a proof or a citation.
 
 ## Phase 5: publish
 
