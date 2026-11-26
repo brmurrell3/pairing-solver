@@ -138,6 +138,6 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 
 ## Phase 5: publish
 
-- **Code:** a public repository with the clean-room note, after checking the employer's outside-activity and IP policy. Done 2026-11-26: https://github.com/brmurrell3/pairing-solver, release v0.1.0. CI (`.github/workflows/ci.yml`) builds and runs the five non-HiGHS tests and both Python checks on Ubuntu 24.04 (GCC) and macOS (Clang); first run green in under a minute per job. Assumptions: "published version" means a tagged GitHub release, not a package registry; CI skips the HiGHS tests (about 9 minutes) because HiGHS is not installed there, so they stay a local gate.
+- **Code:** a public repository with the clean-room note, after checking the employer's outside-activity and IP policy. Done 2026-11-26: https://github.com/brmurrell3/pairing-solver, release v1.0.0. CI (`.github/workflows/ci.yml`) builds and runs the five non-HiGHS tests and both Python checks on Ubuntu 24.04 (GCC) and macOS (Clang); first run green in under a minute per job. Assumptions: "published version" is a tagged GitHub release with no package registry (owner, 2026-11-26); CI skips the HiGHS tests (about 9 minutes) because HiGHS is not installed there, so they stay a local gate.
 - **Write-up:** a project page on brendanmurrell.com covering the formulation, the proofs and the benchmark results.
 - **Resume:** a project line on the resume.
