@@ -150,28 +150,28 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 
 **Measured first (2026-11-26, Mac):** the earlier Linux figures did not hold. The generators used the standard library's distributions, which libc++ and libstdc++ implement differently, so the Mac ran a different case set, and on it the 1,000-case HiGHS test failed: ours 175 s against HiGHS's 46 s, 2 node-limit stops, and one large case 70% above HiGHS. The 1,000-series book took 30 s: 6.8 s root LP, then 24 s in 446 dense refactorizations during the rounding dive.
 
-**Done (commits 925313f to 22ba921):**
-- *Simplex:* refactor at an optimality check only after 16 updates or a failed first check; steepest-edge norms kept through the inverse's row updates; refactorization touches only pivot-row nonzeros (43 to 14 ms); capacity rows that one column alone uses are dropped (453 of 1,527 rows); the pivot row is formed row-wise from rho's nonzeros; bound changes update the primal values incrementally.
-- *Dive:* the root dive first holds every on-grid integer column and rounds only the fractional ones (about 12 LP solves instead of 300 to 450), then holds only columns at a bound, then holds nothing; the last is skipped when a passed-in incumbent already meets the gap.
-- *Model build:* 85 to 8.5 ms at 1,000 series, mostly by not asking Phase 1 about pairs it always rejects (its rejections are exceptions).
-- *Book (`include/pairing/solver.hpp`):* keeps one subproblem solved. A resize moves only bounds and re-solves on the book's own simplex, basis, inverse and pairing; other orders build a new model started from the book's basis and pairing, matched by row and column keys.
-- *Portable generators* (`tests/generate.hpp`): seeded books are now the same on every platform. They exposed a pruning bug in the strike DP (fixed, ab6dea7).
-- *HiGHS test:* a node-limit stop now passes if the answer is within the gap of HiGHS (assumption: the Phase 2 criterion is quality, not proof). Two of the 1,000 cases stop there.
+**Done (commits 925313f to 23bc0a2):**
+- *Simplex:* refactor at an optimality check only after 16 updates or a failed first check; steepest-edge norms kept through the inverse's row updates; refactorization keeps B column-major with a pivot permutation instead of row swaps, logicals first (43 to about 5 ms at 1,182 rows); capacity rows that one column alone uses are dropped (453 of 1,527 rows); the pivot row is formed row-wise from rho's nonzeros; bound changes update the primal values incrementally; dense dot products and row updates use four independent sums so they vectorize.
+- *Dive:* the root dive first holds every on-grid integer column and rounds only the fractional ones (about 12 LP solves instead of 300 to 450), then holds only columns at a bound, then (given a guide) holds the columns where the LP agrees with the previous pairing, then holds nothing; the last is skipped when a passed-in incumbent already meets the gap.
+- *Model build and checker:* build 85 to 5.8 ms at 1,000 series, mostly by not asking Phase 1 about pairs it always rejects (its rejections are exceptions); the checker's duplicate-leg test 6 to 0.2 ms.
+- *Book (`include/pairing/solver.hpp`):* keeps one subproblem solved. A resize moves only bounds and re-solves on the book's own simplex, basis, inverse and pairing. A close holds the position's columns at 0 on the same model and takes its standalone requirement off. Other orders (new series, sign flips, first stock) build a new model started from the book's basis and pairing, matched by row and column keys.
+- *Node limit:* `SolveOptions::node_limit` default 200,000 to 20,000. The cases that reach it have weak bounds under `nearest_long` (overlapping groups), not bad answers.
+- *Portable generators* (`tests/generate.hpp`): seeded books are now the same on every platform. They exposed a pruning bug in the strike DP (fixed, ab6dea7; proofs.md corrected, 7f981c9).
+- *HiGHS test:* a node-limit stop passes if the answer is within the gap of HiGHS (assumption: the Phase 2 criterion is quality, not proof).
 
-**Evidence (2026-11-26, Mac):** `ctest -E highs` passes 5 of 5; the new `solver` group `book_orders` checks `what_if` and `fill` against exact cold solves on 300 random books. `pairing_highs_tests 1000 40`: 0 failures, LP within 4e-15 of HiGHS, at most 0.996% above it; ours 45 s, HiGHS 29 s (two node-limit cases take 27 s of ours). `pairing_highs_tests large`: all five within 0.89%, slowest 1.8 s (HiGHS up to 29 s). Benchmarks (docs/benchmarks.md, "Solve time by size" and "Pre-trade check"):
+**Evidence (2026-11-26, Mac):** `ctest -E highs` passes 5 of 5; the `solver` group `book_orders` checks `what_if` and `fill` against exact cold solves on 300 random books, through every path. `pairing_highs_tests 1000 40`: 0 failures, LP within 3e-15 of HiGHS, at most 0.991% above it, 3 stops at the node limit; ours 4.9 s, HiGHS 29 s. `pairing_highs_tests large`: all five within 0.74%, slowest 0.34 s (HiGHS up to 29 s). Benchmarks (docs/benchmarks.md, "Solve time by size" and "Pre-trade check"):
 
-  | 1,000-series book | Before (Mac) | Now |
+  | 1,000-series book | Start of Phase 6 (Mac) | Now |
   |---|---|---|
-  | Cold solve | 30 s | 2.4 s |
-  | Order, resize: median / p90 / p99 | 3.7 s (cold) | 96 ms / 166 ms / 2.2 s |
-  | Order, new series: median / max | 3.7 s | 147 ms / 248 ms |
-  | Order, close: median / p90 | 3.7 s | 147 ms / 2.5 s |
+  | Cold solve | 30 s | 1.15 s |
+  | Order, resize (200): median / p90 / p99 / max | 3.7 s (cold) | 38 / 49 / 69 / 79 ms |
+  | Order, new series (20): median / p90 / max | 3.7 s | 46 / 55 / 61 ms |
+  | Order, close (20): median / p90 / max | 3.7 s | 32 / 39 / 49 ms |
 
-  At 300 series every kind of order prices in 6 to 13 ms at p90. Against a cold solve, order totals differ by at most 0.024%.
+  At 300 series every order prices in under 7 ms, at 100 series under 0.6 ms. Order totals differ from a cold solve's by at most 0.035%.
 
-**Not met yet.** The 1,000-series p99 is 2.2 s and the median 96 ms, against 50 ms. Where the time goes, per resize order: 2 to 4 dense refactorizations at about 10 ms each, about 50 pivots at 0.6 ms each (dense O(m²) inverse updates at m = 1,182), 8.5 ms rebuilding the model, 6 ms in the checker. The tail is orders whose first two dives strand a linked set and whose old pairing no longer fits (mostly closes and reductions), so the free dive runs (1.5 to 3 s). Next, in order of expected gain:
-1. A sparse LU basis factorization with Forrest-Tomlin updates in place of the dense inverse, to make refactorization and pivots proportional to nonzeros. This is the change that can reach 50 ms; everything else is already a minority of the time.
-2. A repaired incumbent for reductions and closes (the old pairing with the removed lots taken out of their structures), so the free dive is never needed in a `Book`.
-3. Bounds-only updates for resizes instead of rebuilding the model.
-4. For the pre-trade decision itself: return the proven bound with the answer, so an order far from the account's limit can be accepted or rejected from the bounds alone.
-
+**Where it stands.** The median and p90 meet 50 ms; the resize p99 (69 ms) and the cold solve (1.15 s) do not yet. Per resize order the time is now about 3 dense refactorizations at 5 ms, 40 to 60 pivots at about 0.3 ms (dense O(m²) inverse updates at m = 1,182), 5.8 ms rebuilding the model, and the rest in the dive's LP solves. Next, in order of expected gain:
+1. A sparse LU basis factorization with Forrest-Tomlin updates in place of the dense inverse, so refactorization and pivots cost in proportion to nonzeros. The loss rows make member columns dense (a nonzero per strike), so it likely needs the payoff rows rewritten as the strike walk's recursion (each member in O(1) rows) to avoid fill.
+2. Bounds-only updates for resizes instead of rebuilding the model (5.8 ms, plus the shape comparison).
+3. For the pre-trade decision itself: return the proven bound with the answer, so an order far from the account's limit can be accepted or rejected from the bounds alone.
+4. A stronger formulation for `nearest_long`, whose LP bound is 2.5% below the optimum on the two hardest test cases.
