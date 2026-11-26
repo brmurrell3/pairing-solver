@@ -749,7 +749,10 @@ bool feasible(const Lp& lp, const std::vector<double>& x) {
 // state, new columns sit at the bound their cost makes dual feasible (as in the slack
 // basis), and new rows' logicals are basic. The basic count is then made the row count:
 // surplus logicals, then surplus columns, become nonbasic; a shortfall is made up with
-// logicals. refactor() repairs any singularity left. Every variable is boxed, so the dual
+// logicals, first of the rows that basic columns of `from` missing from `to` touched,
+// since those are the rows that lost their basic variable. (Any logicals left the dual
+// simplex up to 3,000 pivots from the optimum after a close; those rows' take it a few.)
+// refactor() repairs any singularity left. Every variable is boxed, so the dual
 // simplex restores dual feasibility by bound flips.
 LpBasis map_basis(const Model& from, const LpBasis& b, const Model& to) {
     const int n0 = from.lp.cols(), n1 = to.lp.cols(), m1 = to.lp.rows();
@@ -762,14 +765,14 @@ LpBasis map_basis(const Model& from, const LpBasis& b, const Model& to) {
     for (int j = 0; j < n1; ++j) {
         auto it = col.find(to.col_key[j]);
         signed char st = it != col.end() ? b.state[it->second] : (to.lp.cost[j] >= 0 ? 1 : 2);
+        out.state[j] = st;
         if (st == 0) basic_cols.push_back(j);
-        else out.state[j] = st;
     }
     for (int i = 0; i < m1; ++i) {
         auto it = row.find(to.row_key[i]);
         signed char st = it != row.end() ? b.state[n0 + it->second] : 0;
+        out.state[n1 + i] = st;
         if (st == 0) basic_logicals.push_back(n1 + i);
-        else out.state[n1 + i] = st;
     }
     while (static_cast<int>(basic_cols.size() + basic_logicals.size()) > m1) {
         int v;
@@ -782,10 +785,24 @@ LpBasis map_basis(const Model& from, const LpBasis& b, const Model& to) {
         }
         out.state[v] = 1;
     }
-    for (int i = 0; i < m1 && static_cast<int>(basic_cols.size() + basic_logicals.size()) < m1; ++i)
-        if (out.state[n1 + i] != 0 && std::find(basic_logicals.begin(), basic_logicals.end(), n1 + i) == basic_logicals.end()) {
-            basic_logicals.push_back(n1 + i);
+    std::vector<int> lost;  // rows of `to` that a dropped basic column of `from` touched
+    {
+        std::unordered_map<std::uint64_t, int> to_row, to_col;
+        for (int i = 0; i < m1; ++i) to_row.emplace(to.row_key[i], i);
+        for (int j = 0; j < n1; ++j) to_col.emplace(to.col_key[j], j);
+        for (int j = 0; j < n0; ++j) {
+            if (b.state[j] != 0 || to_col.count(from.col_key[j])) continue;
+            for (const auto& e : from.lp.columns[j])
+                if (auto it = to_row.find(from.row_key[e.row]); it != to_row.end()) lost.push_back(it->second);
         }
+    }
+    auto add_logical = [&](int i) {
+        if (static_cast<int>(basic_cols.size() + basic_logicals.size()) >= m1 || out.state[n1 + i] == 0) return;
+        out.state[n1 + i] = 0;
+        basic_logicals.push_back(n1 + i);
+    };
+    for (int i : lost) add_logical(i);
+    for (int i = 0; i < m1; ++i) add_logical(i);
     for (int v : basic_cols) out.state[v] = 0;
     for (int v : basic_logicals) out.state[v] = 0;
     out.head = basic_cols;
@@ -877,7 +894,63 @@ void Book::restore_bounds() {
     for (int i = 0; i < lp.rows(); ++i) simplex_->set_bounds(lp.cols() + i, lp.row_lo[i], lp.row_up[i]);
 }
 
+// A close is priced on the book's own model and simplex: every column that uses the
+// position is held at 0, so the position stays standalone and interacts with nothing, and
+// its standalone requirement then comes off. That equals pricing the book without it, and
+// keeps the book's basis: through a new model, one close in 40 took 3,000 pivots (0.5 s)
+// on a 1,000-series book.
+Solution Book::price_close(int i) {
+    Lp& lp = model_->lp;
+    std::vector<std::pair<int, double>> held;  // column, its upper bound
+    const int row = model_->capacity_row[i];
+    for (int j = 0; j < lp.cols(); ++j) {
+        bool uses = j == model_->capacity_column[i];
+        if (row >= 0)
+            for (const auto& e : lp.columns[j]) uses |= e.row == row;
+        if (!uses || lp.col_up[j] == 0) continue;
+        held.push_back({j, lp.col_up[j]});
+        lp.col_up[j] = 0;
+        simplex_->set_bounds(j, lp.col_lo[j], 0);
+    }
+    SolveOptions so = o_;
+    so.warm_start = {};
+    std::vector<double> x;
+    Solution s = solve_model(p_, r_, so, *model_, simplex_.get(), nullptr, &x, &x_);
+    for (auto [j, up] : held) lp.col_up[j] = up;
+    restore_bounds();
+
+    auto it = std::find_if(s.residuals.begin(), s.residuals.end(), [&](const Residual& res) { return res.leg.position == i; });
+    if (it == s.residuals.end()) throw std::logic_error("a closed position is not standalone");
+    const Money standalone = it->requirement.total();
+    s.residuals.erase(it);
+    auto renumber = [&](int& position) {
+        if (position > i) --position;
+    };
+    for (auto& st : s.structures)
+        for (auto& l : st.legs) renumber(l.position);
+    for (auto& res : s.residuals) renumber(res.leg.position);
+    s.shadow_options.erase(s.shadow_options.begin() + i);
+    s.total -= standalone;
+    s.all_standalone -= standalone;
+    const double d = static_cast<double>(standalone.micros()) / Money::per_dollar;
+    s.lp_objective -= d;
+    s.lp_bound -= d;
+    s.bound -= d;
+    const double total = static_cast<double>(s.total.micros()) / Money::per_dollar;
+    s.gap = total > 0 ? (total - s.lp_bound) / total : 0;
+    s.proven_gap = total > 0 ? std::max(0.0, (total - s.bound) / total) : 0;
+    s.root_basis = {};  // the book's model, not the closed book's
+    return s;
+}
+
 Solution Book::what_if(const OptionLeg& order) {
+    for (std::size_t i = 0; i < p_.options.size(); ++i) {
+        const Option &a = p_.options[i].option, &b = order.option;
+        if (a.underlying == b.underlying && a.type == b.type && a.strike == b.strike && a.expiry == b.expiry &&
+            a.style == b.style && a.listing == b.listing && a.deliverable == b.deliverable && a.product == b.product &&
+            p_.options[i].quantity + order.quantity == 0 && p_.options.size() > 1)
+            return price_close(static_cast<int>(i));
+    }
     Trial t = price(after(order));
     if (t.shape_kept) restore_bounds();
     return std::move(t.solution);

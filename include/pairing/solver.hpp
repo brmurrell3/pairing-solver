@@ -207,6 +207,7 @@ private:
     Portfolio after(const OptionLeg& order) const;
     Portfolio after_stock(std::int64_t shares) const;
     Trial price(Portfolio q);
+    Solution price_close(int position);
     void restore_bounds();
     void commit(Trial t);
 
