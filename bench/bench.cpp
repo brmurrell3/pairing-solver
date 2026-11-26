@@ -182,6 +182,68 @@ void timing_table(const RuleSet& r) {
     std::cout << "\n";
 }
 
+// Pre-trade check (plan, "Pre-trade check"): a Book holds one market-maker book solved,
+// and each order is priced from its optimum. Resizes keep the model's shape; new series and
+// closes rebuild it. Each order is priced against the same book (what_if, not fill), and
+// the first 20 of each kind are also solved cold, to compare totals.
+void orders_table(const RuleSet& r) {
+    std::cout << "## Pre-trade check\n\n"
+              << "One market-maker book per size, held in a `Book` and solved once with the defaults (`rel_gap` 1%, 3,000 "
+                 "nodes). Each order is priced from the book's optimum with `Book::what_if`. A resize adds or removes 1 to 10 "
+                 "contracts of a held series without closing it; a new series is a series the book does not hold; a close "
+                 "sells or buys back a whole position. Against cold is the order's total less a cold `solve()` of the book "
+                 "after the order, relative to it, over the first 20 orders of each kind.\n\n"
+              << "| Series | Book solve | Order | Orders | Median | p90 | p99 | Max | Against cold: mean | min | max |\n"
+                 "|---|---|---|---|---|---|---|---|---|---|---|\n";
+    for (int n : {100, 300, 1000}) {
+        std::mt19937_64 rng(5'000 + n);  // the timing table's first book of this size
+        Portfolio p = books::market_maker(rng, n);
+        SolveOptions o;
+        o.node_limit = 3000;
+        auto t0 = std::chrono::steady_clock::now();
+        Book book(p, r, o);
+        const double book_s = seconds_since(t0);
+        std::mt19937_64 orders(9'000 + n);
+        const int count[] = {200, n == 1000 ? 20 : 50, n == 1000 ? 20 : 50};
+        const char* names[] = {"resize", "new series", "close"};
+        for (int kind = 0; kind < 3; ++kind) {
+            Stats t, diff;
+            for (int k = 0; k < count[kind]; ++k) {
+                const int i = gen::uniform_int(orders, 0, static_cast<int>(p.options.size()) - 1);
+                OptionLeg order = p.options[i];
+                Portfolio after = p;
+                if (kind == 0) {
+                    const std::int64_t q = order.quantity;
+                    std::int64_t d = gen::uniform_int(orders, 1, 10) * (gen::uniform_01(orders) < 0.5 ? 1 : -1);
+                    if ((q > 0) != (q + d > 0) || q + d == 0) d = -d;
+                    order.quantity = d;
+                    after.options[i].quantity += d;
+                } else if (kind == 1) {
+                    // Half a strike step off the book's grid, so the series is new.
+                    order.option.strike = order.option.strike + Money::from_micros(5'000);
+                    order.quantity = gen::uniform_int(orders, 1, 10) * (gen::uniform_01(orders) < 0.5 ? 1 : -1);
+                    after.options.push_back(order);
+                } else {
+                    order.quantity = -order.quantity;
+                    after.options.erase(after.options.begin() + i);
+                }
+                t0 = std::chrono::steady_clock::now();
+                Solution w = book.what_if(order);
+                t.add(seconds_since(t0));
+                if (k < 20) {
+                    const double cold = dollars(solve(after, r, o).total);
+                    diff.add((dollars(w.total) - cold) / cold);
+                }
+            }
+            std::cout << "| " << n << " | " << ms(book_s) << " | " << names[kind] << " | " << count[kind] << " | "
+                      << ms(t.quantile(0.5)) << " | " << ms(t.quantile(0.9)) << " | " << ms(t.quantile(0.99)) << " | "
+                      << ms(t.max()) << " | " << pct(diff.mean(), 4) << " | " << pct(*std::min_element(diff.v.begin(), diff.v.end()), 4)
+                      << " | " << pct(diff.max(), 4) << " |\n";
+        }
+    }
+    std::cout << "\n";
+}
+
 // Plan Phase 4: the strike dynamic program against branch-and-bound on the books it
 // covers. Straddles are off in both, since the DP does not model them.
 void dp_table(const RuleSet& r) {
@@ -325,6 +387,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "integrality") integrality_table(r);
     if (only.empty() || only == "timing") timing_table(r);
     if (only.empty() || only == "batch") batch_table(r);
+    if (only.empty() || only == "orders") orders_table(r);
     if (only.empty() || only == "dp") dp_table(r);
 #ifdef PAIRING_BENCH_HIGHS
     if (only.empty() || only == "highs") highs_table(r);

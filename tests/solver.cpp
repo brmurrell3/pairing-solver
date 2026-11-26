@@ -403,6 +403,70 @@ void strike_dp() {
     CHECK(solve_strike_dp(bull, r, tiny).status == MipStatus::node_limit);
 }
 
+// Book: pricing an order from the book's optimum must give what an exact cold solve of the
+// book after the order gives, whichever path it takes: bounds only (a resize), or a new
+// model (a new series, a close, a sign flip, stock). Filling it must leave the book where a
+// fresh Book on the new portfolio would be.
+void book_orders() {
+    std::mt19937_64 rng(5'180'000);
+    const ExpiryRule rules[] = {ExpiryRule::pairwise, ExpiryRule::nearest_long, ExpiryRule::same_expiry};
+    int resized = 0;
+    for (int k = 0; k < 300; ++k) {
+        gen::Shape shape;
+        shape.max_series = 12;
+        shape.max_quantity = 6;
+        shape.adjusted = k % 4 == 0;
+        Portfolio p = gen::portfolio(rng, shape);
+        if (p.options.empty()) continue;
+        RuleSet rr = gen::rules(rng, rules[k % 3]);
+        Book book(p, rr, exact);
+        CHECK_EQ(book.solution().total, solve(p, rr, exact).total);
+        for (int t = 0; t < 4; ++t) {
+            Portfolio after = p;
+            OptionLeg order;
+            const int i = gen::uniform_int(rng, 0, static_cast<int>(p.options.size()) - 1);
+            const int kind = gen::uniform_int(rng, 0, 4);
+            if (kind <= 2) {  // resize, keeping the side
+                order = p.options[i];
+                const std::int64_t q = order.quantity;
+                order.quantity = gen::uniform_int(rng, 1, 3) * (q > 0 ? 1 : -1) * (kind == 2 && std::llabs(q) > 3 ? -1 : 1);
+                after.options[i].quantity += order.quantity;
+                ++resized;
+            } else if (kind == 3) {  // close
+                order = p.options[i];
+                order.quantity = -order.quantity;
+                after.options.erase(after.options.begin() + i);
+            } else {  // a new series one strike step away
+                order = p.options[i];
+                order.option.strike = order.option.strike + Money::dollars(1);
+                order.quantity = gen::uniform_int(rng, 1, 3) * (gen::uniform_01(rng) < 0.5 ? 1 : -1);
+                bool held = false;
+                for (const auto& l : p.options)
+                    held |= l.option.type == order.option.type && l.option.strike == order.option.strike &&
+                            l.option.expiry == order.option.expiry && l.option.deliverable == order.option.deliverable &&
+                            l.option.style == order.option.style && l.option.listing == order.option.listing;
+                if (held || (order.quantity < 0 && order.option.listing != Listing::listed)) continue;
+                after.options.push_back(order);
+            }
+            if (after.options.empty()) continue;
+            Solution w = book.what_if(order);
+            CHECK_EQ(w.total, solve(after, rr, exact).total);
+            CHECK_EQ(book.solution().total, solve(book.portfolio(), rr, exact).total);  // unchanged
+            if (t % 2 == 1) {
+                book.fill(order);
+                p = book.portfolio();
+                CHECK_EQ(book.solution().total, w.total);
+            }
+        }
+        if (p.stock.shares == 0 && p.options.front().option.product == ProductClass::equity) {
+            Portfolio after = p;
+            after.stock = StockLeg{100, p.market.underlying};
+            CHECK_EQ(book.what_if_stock(100).total, solve(after, rr, exact).total);
+        }
+    }
+    CHECK(resized > 500);
+}
+
 }  // namespace
 
 int run_solver_tests() {
@@ -419,6 +483,7 @@ int run_solver_tests() {
     run("greedy_baseline", greedy_baseline);
     run("compact_straddles", compact_straddles);
     run("strike_dp", strike_dp);
+    run("book_orders", book_orders);
     ::check::context().clear();
     return groups;
 }

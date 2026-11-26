@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -159,9 +160,64 @@ struct Model {
     // dropped because one column alone uses it; capacity_column is then that column.
     std::vector<int> capacity_row;
     std::vector<int> capacity_column;
+    // Per row and per column: a hash of what it stands for (its kind and the series it
+    // involves, not their indices), equal across two books for the same row or column. A
+    // Book uses them to start an order whose model differs from the book's at the book's
+    // basis (map_basis in src/solver.cpp).
+    std::vector<std::uint64_t> row_key, col_key;
 };
 
 Model build_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o = {});
+
+// A pre-trade check: one subproblem kept solved between orders, so pricing an order starts
+// from the book's optimum instead of from scratch (docs/plan.md, "Pre-trade check"). An
+// order that changes the size of a series the book holds, without closing it or turning it
+// from long to short, moves only bounds: the re-solve keeps the book's basis and inverse and
+// starts from its pairing where that still fits. Any other order (a new series, a close, a
+// sign flip, the first stock) builds a new model, started from the book's root basis and
+// pairing matched row by row and column by column (Model::row_key). Either way the result
+// is solve()'s, within SolveOptions::rel_gap; SolveOptions::warm_start is ignored.
+class Book {
+public:
+    Book(Portfolio p, RuleSet r, SolveOptions o = {});
+    ~Book();
+    Book(const Book&) = delete;
+    Book& operator=(const Book&) = delete;
+
+    const Portfolio& portfolio() const { return p_; }
+    const Solution& solution() const { return s_; }
+
+    // The book's solution if the order filled. order.quantity is the contracts bought
+    // (negative: sold) of order.option's series; order.value is the series' new mark. The
+    // book is unchanged.
+    Solution what_if(const OptionLeg& order);
+    Solution what_if_stock(std::int64_t shares);  // shares bought, negative sold
+    // Fills the order: the book's portfolio and solution become what_if's.
+    void fill(const OptionLeg& order);
+    void fill_stock(std::int64_t shares);
+
+private:
+    struct Trial {
+        Portfolio portfolio;
+        std::unique_ptr<Model> model;
+        Solution solution;
+        std::vector<double> x;
+        bool shape_kept = false;
+    };
+    Portfolio after(const OptionLeg& order) const;
+    Portfolio after_stock(std::int64_t shares) const;
+    Trial price(Portfolio q);
+    void restore_bounds();
+    void commit(Trial t);
+
+    Portfolio p_;
+    RuleSet r_;
+    SolveOptions o_;
+    std::unique_ptr<Model> model_;
+    std::unique_ptr<DualSimplex> simplex_;  // refers to model_->lp
+    Solution s_;
+    std::vector<double> x_;  // the model's assignment for s_
+};
 
 // Reads an integer solution (values within 1e-6 of integers) of a model back into
 // structures and residuals, without requirements; check_solution fills those.

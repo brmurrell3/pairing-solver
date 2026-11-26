@@ -6,11 +6,13 @@
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 
 #include "pairing/solver.hpp"
 
@@ -31,6 +33,22 @@ bool accepted(F&& f, Requirement& out) {
         return false;
     }
 }
+
+// 64-bit FNV-1a over a sequence of integers: the identity of a row or column in terms of
+// series, not indices, so one book's basis can start another's (Model::row_key).
+struct Key {
+    std::uint64_t h = 0xcbf29ce484222325ULL;
+    template <class T>
+    Key& operator<<(T value) {
+        const auto v = static_cast<std::uint64_t>(value);
+        for (int b = 0; b < 8; ++b) {
+            h ^= (v >> (8 * b)) & 0xff;
+            h *= 0x100000001b3ULL;
+        }
+        return *this;
+    }
+    operator std::uint64_t() const { return h; }
+};
 
 struct Builder {
     const Portfolio& p;
@@ -54,6 +72,23 @@ struct Builder {
     OptionLeg leg(int i, std::int64_t q) const { return lot_leg(p.options[i], q, lots); }
     StockLeg shares(std::int64_t q) const { return StockLeg{p.stock.shares < 0 ? -q : q, p.stock.price}; }
     int cap_index(int position) const { return position == stock_position ? n : position; }
+    std::int64_t series(int position) const {
+        if (position == stock_position || position == n) return static_cast<std::int64_t>(Key{} << 'T');
+        const Option& o = p.options[position].option;
+        Key k;
+        k << 'S' << static_cast<int>(o.type) << o.strike.micros() << o.expiry.year << o.expiry.month << o.expiry.day
+          << o.deliverable << static_cast<int>(o.style) << static_cast<int>(o.listing) << static_cast<int>(o.product)
+          << (p.options[position].quantity > 0);
+        return static_cast<std::int64_t>(k);
+    }
+    int row(double lo, double up, std::uint64_t key) {
+        m.row_key.push_back(key);
+        return m.lp.add_row(lo, up);
+    }
+    int column(double cost, double lo, double up, std::vector<Lp::Entry> entries, std::uint64_t key) {
+        m.col_key.push_back(key);
+        return m.lp.add_column(cost, lo, up, std::move(entries));
+    }
     bool is(int i, OptionType t, int side) const {
         return p.options[i].option.type == t && (p.options[i].quantity > 0) == (side > 0);
     }
@@ -76,7 +111,7 @@ struct Builder {
                 m.capacity_row.push_back(-1);
                 continue;
             }
-            m.capacity_row.push_back(m.lp.add_row(0, static_cast<double>(cap[i])));
+            m.capacity_row.push_back(row(0, static_cast<double>(cap[i]), Key{} << 'c' << series(i)));
             m.constant += unit[i] * cap[i];
         }
     }
@@ -94,7 +129,10 @@ struct Builder {
             entries.push_back({m.capacity_row[c], static_cast<double>(l.quantity)});
         }
         if (saving >= Money{}) return;
-        m.lp.add_column(dollars(saving), 0, ub, std::move(entries));
+        Key key;
+        key << 't' << static_cast<int>(kind);
+        for (const auto& l : legs) key << series(l.position) << l.quantity;
+        column(dollars(saving), 0, ub, std::move(entries), key);
         m.integer.push_back(true);
         m.column.push_back({Model::Column::template_unit, static_cast<int>(m.templates.size())});
         m.templates.push_back({kind, std::move(legs)});
@@ -209,6 +247,7 @@ struct Builder {
         if (!puts || !calls) return;
         std::sort(order.begin(), order.end());
         const int cls = m.straddle_classes++;
+        const std::int64_t cls_key = Key{} << 'q' << std::llabs(leg(shorts.front(), 1).units());
         const int k = static_cast<int>(order.size());
         std::vector<int> cheap(k, -1), dear(k, -1);
         for (int rank = 0; rank < k; ++rank) {
@@ -220,12 +259,12 @@ struct Builder {
             Money saving = u - market_value(leg(i, 1));
             const double up = static_cast<double>(cap[i]);
             if (above && saving > Money{}) {
-                cheap[rank] = m.lp.add_column(-dollars(saving), 0, up, {{m.capacity_row[i], 1.0}});
+                cheap[rank] = column(-dollars(saving), 0, up, {{m.capacity_row[i], 1.0}}, Key{} << 'a' << cls_key << series(i));
                 m.integer.push_back(true);
                 m.column.push_back({Model::Column::straddle_cheap, cls, i, rank});
             }
             if (below) {
-                dear[rank] = m.lp.add_column(0, 0, up, {{m.capacity_row[i], 1.0}});
+                dear[rank] = column(0, 0, up, {{m.capacity_row[i], 1.0}}, Key{} << 'b' << cls_key << series(i));
                 m.integer.push_back(true);
                 m.column.push_back({Model::Column::straddle_expensive, cls, i, rank});
             }
@@ -234,7 +273,7 @@ struct Builder {
         // total cheap lots equal total dear lots, and for every rank t the cheap lots ranked
         // t or higher do not exceed the dear lots ranked above t.
         for (int cheap_type : {1, 0}) {
-            int total = m.lp.add_row(0, 0);
+            int total = row(0, 0, Key{} << 'u' << cls_key << cheap_type);
             bool any = false;
             for (int rank = 0; rank < k; ++rank) {
                 const int type = std::get<1>(order[rank]);
@@ -248,7 +287,7 @@ struct Builder {
             for (int t = 0; t < k; ++t) {
                 if (std::get<1>(order[t]) != cheap_type || cheap[t] < 0) continue;
                 // dear lots ranked above t, less cheap lots ranked t or higher, at least 0
-                int row = m.lp.add_row(0, lp_infinity);
+                int row = this->row(0, lp_infinity, Key{} << 'v' << cls_key << cheap_type << series(std::get<2>(order[t])));
                 for (int rank = t; rank < k; ++rank) {
                     const int type = std::get<1>(order[rank]);
                     if (type == cheap_type && cheap[rank] >= 0) m.lp.columns[cheap[rank]].push_back({row, -1.0});
@@ -291,10 +330,12 @@ struct Builder {
                 renumber[i] = next;
                 lp.row_lo[next] = lp.row_lo[i];
                 lp.row_up[next] = lp.row_up[i];
+                m.row_key[next] = m.row_key[i];
                 ++next;
             }
         lp.row_lo.resize(next);
         lp.row_up.resize(next);
+        m.row_key.resize(next);
         for (auto& col : lp.columns) {
             std::erase_if(col, [&](const Lp::Entry& e) { return drop[e.row]; });
             for (auto& e : col) e.row = renumber[e.row];
@@ -331,7 +372,7 @@ struct Builder {
     // One flexible max-loss group (spec §2) over candidate options. Rows: a loss row per
     // candidate strike, a balance equality per type in share-equivalents and, under the
     // pairwise reading, the suffix inequalities of spec §3.1 item 4 in place of flows.
-    void group(const std::vector<int>& candidates, bool suffix_rows) {
+    void group(const std::vector<int>& candidates, bool suffix_rows, std::int64_t g) {
         bool short_seen = false, long_seen = false;
         for (int i : candidates) (p.options[i].quantity < 0 ? short_seen : long_seen) = true;
         if (!short_seen || !long_seen) return;
@@ -359,10 +400,10 @@ struct Builder {
         std::vector<int> loss_row;
         std::vector<Lp::Entry> t_entries;
         for (std::size_t k = 0; k < strikes.size(); ++k) {
-            loss_row.push_back(m.lp.add_row(0, t_up + loss_up[k]));
+            loss_row.push_back(row(0, t_up + loss_up[k], Key{} << 'l' << g << strikes[k].micros()));
             t_entries.push_back({loss_row.back(), 1.0});
         }
-        m.lp.add_column(1.0, 0, t_up, std::move(t_entries));
+        column(1.0, 0, t_up, std::move(t_entries), Key{} << 'L' << g);
         m.integer.push_back(false);
         m.column.push_back({Model::Column::loss, h});
 
@@ -381,11 +422,11 @@ struct Builder {
                 }
             if (expiries.empty()) continue;
             TypeRows& tr = rows[t];
-            tr.balance = m.lp.add_row(0, 0);
+            tr.balance = row(0, 0, Key{} << 'B' << g << static_cast<int>(t));
             // The earliest date's suffix is the balance row itself.
             if (suffix_rows)
                 for (auto it = std::next(expiries.begin()); it != expiries.end(); ++it)
-                    tr.suffix.push_back({*it, m.lp.add_row(0, long_units)});
+                    tr.suffix.push_back({*it, row(0, long_units, Key{} << 'U' << g << static_cast<int>(t) << it->year << it->month << it->day)});
         }
 
         for (int i : candidates) {
@@ -402,11 +443,11 @@ struct Builder {
             // Shorts in the group leave their standalone requirement for the group's loss.
             // Longs are paid in full, which costs a long beyond nine months its loan value (Q3).
             Money cost = o.quantity > 0 ? market_value(one) - unit[i] : -unit[i];
-            m.lp.add_column(dollars(cost), 0, static_cast<double>(cap[i]), std::move(e));
+            column(dollars(cost), 0, static_cast<double>(cap[i]), std::move(e), Key{} << 'm' << g << series(i));
             m.integer.push_back(true);
             m.column.push_back({Model::Column::member, h, i});
         }
-        aggregates(candidates);
+        aggregates(candidates, g);
     }
 
     // With mixed deliverables (100, 150 and 10 shares, or lots of them) the balance rows have
@@ -420,7 +461,7 @@ struct Builder {
     // first. The congruence holds for every whole-lot solution, so no solution is lost.
     // (A full lattice basis of the balance row, which makes every integer choice balance,
     // was tried and was 2.8 times slower on the 1,000-case test: its columns are dense.)
-    void aggregates(const std::vector<int>& candidates) {
+    void aggregates(const std::vector<int>& candidates, std::int64_t g) {
         const int first = static_cast<int>(m.column.size()) - static_cast<int>(candidates.size());
         for (OptionType t : {OptionType::call, OptionType::put}) {
             std::map<std::int64_t, std::vector<std::pair<int, double>>> by;  // |units| -> (member column, ±1)
@@ -436,14 +477,14 @@ struct Builder {
                     if (other.first != u) g = std::gcd(g, other.first);
                 const std::int64_t k = g / std::gcd(u, g);
                 if (k == 1 && cols.size() < 2) continue;  // a lone member is already an integer column
-                int row = m.lp.add_row(0, 0);
+                int row = this->row(0, 0, Key{} << 'A' << g << static_cast<int>(t) << u);
                 double lo = 0, up = 0;
                 for (auto [col, sign] : cols) {
                     m.lp.columns[col].push_back({row, sign});
                     (sign > 0 ? up : lo) += sign * m.lp.col_up[col];
                 }
                 const double kd = static_cast<double>(k);
-                m.lp.add_column(0, std::ceil(lo / kd), std::floor(up / kd), {{row, -kd}});
+                column(0, std::ceil(lo / kd), std::floor(up / kd), {{row, -kd}}, Key{} << 'M' << g << static_cast<int>(t) << u);
                 m.integer.push_back(true);
                 m.column.push_back({Model::Column::aggregate, m.groups - 1});
             }
@@ -460,8 +501,9 @@ struct Builder {
             ExpiryRule rule = r.expiry_rule;
             if (cls.first == Style::european && r.european_calendars == EuropeanCalendars::disallowed)
                 rule = ExpiryRule::same_expiry;
+            const std::int64_t g = Key{} << 'g' << static_cast<int>(cls.first) << static_cast<int>(cls.second) << static_cast<int>(rule);
             if (rule == ExpiryRule::pairwise) {
-                group(members, true);
+                group(members, true, g);
                 continue;
             }
             std::set<Date> expiries;
@@ -473,7 +515,7 @@ struct Builder {
                     bool in = rule == ExpiryRule::same_expiry ? e == d : (p.options[i].quantity < 0 ? e <= d : e >= d);
                     if (in) c.push_back(i);
                 }
-                group(c, false);
+                group(c, false, Key{} << g << d.year << d.month << d.day);
             }
         }
     }
@@ -573,8 +615,13 @@ Solution read_solution(const Model& m, const Portfolio& p, const std::vector<dou
     return s;
 }
 
-Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
-    Model m = build_model(p, r, o);
+namespace {
+
+// solve() on a built model. simplex, if given, is built on a model with m's matrix and
+// costs and holds m's bounds; the search starts from its basis. start, if given, is a
+// feasible integer point of m. x receives the model's assignment.
+Solution solve_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o, const Model& m, DualSimplex* simplex,
+                     const std::vector<double>* start, std::vector<double>* x) {
     // Integer assignments cost whole micro-dollars, so a node that cannot beat the
     // incumbent by half of one cannot beat it at all; the relative term absorbs LP rounding.
     double scale = std::fabs(dollars(m.constant));
@@ -583,10 +630,11 @@ Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     mo.rel_gap = o.rel_gap;
     mo.offset = dollars(m.constant);
     mo.node_limit = o.node_limit;
-    mo.start.assign(m.lp.cols(), 0.0);  // everything standalone is always feasible
+    if (start) mo.start = *start;
+    else mo.start.assign(m.lp.cols(), 0.0);  // everything standalone is always feasible
     mo.priority = m.priority;
     mo.root_basis = o.warm_start;
-    MipSolution mip = branch_and_bound(m.lp, m.integer, mo);
+    MipSolution mip = simplex ? branch_and_bound(*simplex, m.lp, m.integer, mo) : branch_and_bound(m.lp, m.integer, mo);
     if (mip.status != MipStatus::optimal && mip.status != MipStatus::node_limit)
         throw std::runtime_error(std::string("the subproblem did not solve: ") + status_name(mip.status));
 
@@ -642,7 +690,201 @@ Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     s.iterations = mip.iterations;
     s.root_iterations = mip.root.iterations;
     s.root_basis = mip.root.basis;
+    if (x) *x = std::move(mip.x);
     return s;
 }
+
+// The same matrix and costs: then one model's basis and inverse serve the other.
+bool same_shape(const Lp& a, const Lp& b) {
+    if (a.rows() != b.rows() || a.cols() != b.cols() || a.cost != b.cost) return false;
+    for (int j = 0; j < a.cols(); ++j) {
+        const auto &x = a.columns[j], &y = b.columns[j];
+        if (x.size() != y.size()) return false;
+        for (std::size_t k = 0; k < x.size(); ++k)
+            if (x[k].row != y[k].row || x[k].value != y[k].value) return false;
+    }
+    return true;
+}
+
+bool feasible(const Lp& lp, const std::vector<double>& x) {
+    if (static_cast<int>(x.size()) != lp.cols()) return false;
+    std::vector<double> activity(lp.rows(), 0.0);
+    for (int j = 0; j < lp.cols(); ++j) {
+        if (x[j] < lp.col_lo[j] - 1e-9 || x[j] > lp.col_up[j] + 1e-9) return false;
+        for (const auto& e : lp.columns[j]) activity[e.row] += e.value * x[j];
+    }
+    for (int i = 0; i < lp.rows(); ++i) {
+        const double tol = 1e-9 * (1 + std::fabs(activity[i]));
+        if (activity[i] < lp.row_lo[i] - tol || activity[i] > lp.row_up[i] + tol) return false;
+    }
+    return true;
+}
+
+// A basis for `to` from a basis of `from`, matching rows and columns by key: each keeps its
+// state, new columns sit at the bound their cost makes dual feasible (as in the slack
+// basis), and new rows' logicals are basic. The basic count is then made the row count:
+// surplus logicals, then surplus columns, become nonbasic; a shortfall is made up with
+// logicals. refactor() repairs any singularity left. Every variable is boxed, so the dual
+// simplex restores dual feasibility by bound flips.
+LpBasis map_basis(const Model& from, const LpBasis& b, const Model& to) {
+    const int n0 = from.lp.cols(), n1 = to.lp.cols(), m1 = to.lp.rows();
+    std::unordered_map<std::uint64_t, int> col, row;
+    for (int j = 0; j < n0; ++j) col.emplace(from.col_key[j], j);
+    for (int i = 0; i < from.lp.rows(); ++i) row.emplace(from.row_key[i], i);
+    LpBasis out;
+    out.state.assign(n1 + m1, 1);
+    std::vector<int> basic_cols, basic_logicals;
+    for (int j = 0; j < n1; ++j) {
+        auto it = col.find(to.col_key[j]);
+        signed char st = it != col.end() ? b.state[it->second] : (to.lp.cost[j] >= 0 ? 1 : 2);
+        if (st == 0) basic_cols.push_back(j);
+        else out.state[j] = st;
+    }
+    for (int i = 0; i < m1; ++i) {
+        auto it = row.find(to.row_key[i]);
+        signed char st = it != row.end() ? b.state[n0 + it->second] : 0;
+        if (st == 0) basic_logicals.push_back(n1 + i);
+        else out.state[n1 + i] = st;
+    }
+    while (static_cast<int>(basic_cols.size() + basic_logicals.size()) > m1) {
+        int v;
+        if (!basic_logicals.empty()) {
+            v = basic_logicals.back();
+            basic_logicals.pop_back();
+        } else {
+            v = basic_cols.back();
+            basic_cols.pop_back();
+        }
+        out.state[v] = 1;
+    }
+    for (int i = 0; i < m1 && static_cast<int>(basic_cols.size() + basic_logicals.size()) < m1; ++i)
+        if (out.state[n1 + i] != 0 && std::find(basic_logicals.begin(), basic_logicals.end(), n1 + i) == basic_logicals.end()) {
+            basic_logicals.push_back(n1 + i);
+        }
+    for (int v : basic_cols) out.state[v] = 0;
+    for (int v : basic_logicals) out.state[v] = 0;
+    out.head = basic_cols;
+    out.head.insert(out.head.end(), basic_logicals.begin(), basic_logicals.end());
+    return out;
+}
+
+// The book's assignment carried to another model by column key; new columns are 0.
+std::vector<double> map_assignment(const Model& from, const std::vector<double>& x, const Model& to) {
+    std::unordered_map<std::uint64_t, int> col;
+    for (int j = 0; j < from.lp.cols(); ++j) col.emplace(from.col_key[j], j);
+    std::vector<double> y(to.lp.cols(), 0.0);
+    for (int j = 0; j < to.lp.cols(); ++j)
+        if (auto it = col.find(to.col_key[j]); it != col.end()) y[j] = x[it->second];
+    return y;
+}
+
+}  // namespace
+
+Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
+    Model m = build_model(p, r, o);
+    return solve_model(p, r, o, m, nullptr, nullptr, nullptr);
+}
+
+Book::Book(Portfolio p, RuleSet r, SolveOptions o) : p_(std::move(p)), r_(std::move(r)), o_(std::move(o)) {
+    model_ = std::make_unique<Model>(build_model(p_, r_, o_));
+    simplex_ = std::make_unique<DualSimplex>(model_->lp);
+    SolveOptions cold = o_;
+    cold.warm_start = {};
+    s_ = solve_model(p_, r_, cold, *model_, simplex_.get(), nullptr, &x_);
+}
+
+Book::~Book() = default;
+
+Portfolio Book::after(const OptionLeg& order) const {
+    Portfolio q = p_;
+    auto same_series = [&](const OptionLeg& l) {
+        const Option &a = l.option, &b = order.option;
+        return a.underlying == b.underlying && a.type == b.type && a.strike == b.strike && a.expiry == b.expiry &&
+               a.style == b.style && a.listing == b.listing && a.deliverable == b.deliverable &&
+               a.product == b.product;
+    };
+    auto it = std::find_if(q.options.begin(), q.options.end(), same_series);
+    if (it == q.options.end()) {
+        if (order.quantity != 0) q.options.push_back(order);
+    } else {
+        it->quantity += order.quantity;
+        it->value = order.value;
+        if (it->quantity == 0) q.options.erase(it);
+    }
+    return q;
+}
+
+Portfolio Book::after_stock(std::int64_t shares) const {
+    Portfolio q = p_;
+    if (q.stock.shares == 0) q.stock.price = q.market.underlying;
+    q.stock.shares += shares;
+    return q;
+}
+
+Book::Trial Book::price(Portfolio q) {
+    Trial t;
+    t.portfolio = std::move(q);
+    t.model = std::make_unique<Model>(build_model(t.portfolio, r_, o_));
+    SolveOptions so = o_;
+    so.warm_start = {};
+    if (same_shape(t.model->lp, model_->lp)) {
+        // Only bounds moved: the book's simplex keeps its basis and inverse, and the book's
+        // pairing, where it still fits, is the first incumbent.
+        const Lp& lp = t.model->lp;
+        for (int j = 0; j < lp.cols(); ++j) simplex_->set_bounds(j, lp.col_lo[j], lp.col_up[j]);
+        for (int i = 0; i < lp.rows(); ++i) simplex_->set_bounds(lp.cols() + i, lp.row_lo[i], lp.row_up[i]);
+        const bool fits = feasible(lp, x_);
+        t.solution = solve_model(t.portfolio, r_, so, *t.model, simplex_.get(), fits ? &x_ : nullptr, &t.x);
+        t.shape_kept = true;
+    } else {
+        // A new model: it starts from the book's root basis and pairing, matched by key.
+        so.warm_start = map_basis(*model_, s_.root_basis, *t.model);
+        std::vector<double> start = map_assignment(*model_, x_, *t.model);
+        const bool fits = feasible(t.model->lp, start);
+        t.solution = solve_model(t.portfolio, r_, so, *t.model, nullptr, fits ? &start : nullptr, &t.x);
+    }
+    return t;
+}
+
+void Book::restore_bounds() {
+    const Lp& lp = model_->lp;
+    for (int j = 0; j < lp.cols(); ++j) simplex_->set_bounds(j, lp.col_lo[j], lp.col_up[j]);
+    for (int i = 0; i < lp.rows(); ++i) simplex_->set_bounds(lp.cols() + i, lp.row_lo[i], lp.row_up[i]);
+}
+
+Solution Book::what_if(const OptionLeg& order) {
+    Trial t = price(after(order));
+    if (t.shape_kept) restore_bounds();
+    return std::move(t.solution);
+}
+
+Solution Book::what_if_stock(std::int64_t shares) {
+    Trial t = price(after_stock(shares));
+    if (t.shape_kept) restore_bounds();
+    return std::move(t.solution);
+}
+
+void Book::commit(Trial t) {
+    p_ = std::move(t.portfolio);
+    s_ = std::move(t.solution);
+    x_ = std::move(t.x);
+    if (t.shape_kept) {
+        // The simplex refers to model_->lp, whose matrix is t's; only the bounds move.
+        model_->lp.col_lo = t.model->lp.col_lo;
+        model_->lp.col_up = t.model->lp.col_up;
+        model_->lp.row_lo = t.model->lp.row_lo;
+        model_->lp.row_up = t.model->lp.row_up;
+        model_->constant = t.model->constant;
+        model_->capacity_row = t.model->capacity_row;
+        model_->capacity_column = t.model->capacity_column;
+    } else {
+        model_ = std::move(t.model);
+        simplex_ = std::make_unique<DualSimplex>(model_->lp);
+    }
+}
+
+void Book::fill(const OptionLeg& order) { commit(price(after(order))); }
+
+void Book::fill_stock(std::int64_t shares) { commit(price(after_stock(shares))); }
 
 }  // namespace pairing
