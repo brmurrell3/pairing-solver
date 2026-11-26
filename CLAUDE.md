@@ -58,6 +58,7 @@ The Python checks need Python 3.11 or later for `tomllib`. `/opt/homebrew/bin/py
 
 - **`check_fixtures.py`** independently recomputes each fixture's netted values, maximum loss, requirement and expiry-policy validity.
 - **`check_structure.py`** tests spec §3.1 items 1, 4 and 5 on 3,000 random portfolios. The pairing condition is checked against an explicit max-flow.
+- **`check_hardness.py`** checks the reductions of proofs.md, "Hardness", against exhaustive search on small random instances: `python3 tools/check_hardness.py` (about half a minute; `--quick` takes a second). It uses only the standard library and runs on Python 3.9 or later.
 
 ## Running code safely (read before running anything)
 
@@ -81,7 +82,7 @@ ctest --test-dir build --output-on-failure
 
 - **`unit`:** money arithmetic, dates, rule-file loading, policies, and the spec §3.1 items 1, 4 and 5 checks run against the engine.
 - **`cboe_manual`, `cboe_manual_samples`:** every case in the two fixture files. `build/pairing_tests fixture <file.toml>` runs one file.
-- **`solver`:** the simplex and branch-and-bound on small LPs and knapsacks, hand-built portfolios (including the long box), the greedy baseline and the strike dynamic program against the exact solve.
+- **`solver`:** the simplex and branch-and-bound on small LPs and knapsacks, hand-built portfolios (including the long box), the greedy baseline, the strike dynamic program against the exact solve, and the subset-sum reduction of proofs.md Theorem 4.
 - **`exhaustive`:** the solver against brute force on 3,000 small portfolios, exact (`rel_gap = 0`).
 - **`highs`, `highs_large`:** the Phase 2 criteria against HiGHS (about 3 and 6 minutes). `pairing_highs_tests <n> [max series] [rel_gap]` and `pairing_highs_tests large [rel_gap] [case]` run them by hand.
 - **Sanitizers:** `cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined -O1"`, then build and run `ctest --test-dir build-asan -E highs` under the guard with `-m 8192`. ASan needs the higher memory cap.

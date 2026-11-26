@@ -110,7 +110,7 @@ Items 1, 4 and 5 were checked numerically on 3,000 random balanced portfolios of
 
 Proofs are still owed for the write-up.
 
-7. **Two-legged pairing alone is polynomial.** With only vertical, calendar and straddle templates, the problem is a transportation problem. Rudd and Schroeder (1982) showed this, and Matsypura and Timkovsky extended it to network flows. Fixed three- and four-leg templates (butterflies, condors) break that structure. Template-only policies are where integrality and hardness become hard questions. The max-loss group avoids them in the continuous case.
+7. **Two-legged pairing alone is polynomial.** With only vertical, calendar and straddle templates, the problem is a transportation problem. Rudd and Schroeder (1982) showed this, and Matsypura and Timkovsky extended it to network flows. Fixed three- and four-leg templates (butterflies, condors) break that structure. Pairing whole contracts into named spreads is NP-hard in the strong sense when butterflies may have equal intervals of any width, and so is pairing into maximum-loss spreads of at most three or four legs (proofs.md, "Hardness", Theorems 1 and 2). The max-loss group avoids this in the continuous case, where it is a linear program. In whole contracts it is NP-hard too, but only in the weak sense (Theorems 3 and 4).
 
 ### 3.2 Problem size
 
@@ -142,7 +142,7 @@ The project writes its own solver; it does not wrap a general-purpose one.
    - The rows are the strike-walk loss rows, the two balance equalities and the suffix pairing inequalities; every variable is boxed between zero and its holding.
    - Branch-and-bound on top of the simplex for grid quantities.
    - Dual simplex suits a batch: moving to another account changes bounds, not coefficients, so the previous basis stays dual feasible.
-2. **Structured algorithm:** a combinatorial method that uses the walk structure. The candidate is dynamic programming over strikes, with the running quantity `D` and the payoff level as state; for whole contracts it is exact. Whether it is polynomial, pseudo-polynomial or neither is an open question for Phase 4.
+2. **Structured algorithm:** a combinatorial method that uses the walk structure. The candidate is dynamic programming over strikes, with the running quantity `D` and the payoff level as state; for whole contracts it is exact. It is pseudo-polynomial, and no exact method is polynomial in the digits of the strikes unless P = NP (proofs.md, "Strike dynamic program" and "Hardness").
 3. **Reference only:** HiGHS is a test-time dependency, never shipped. It certifies optimal values for randomized differential tests against both of the above.
 
 The library is C++20 behind a small C interface (handle in, flat arrays in, results out, error codes). Java can call it through the Foreign Function & Memory API, and Python through ctypes.

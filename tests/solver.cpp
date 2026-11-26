@@ -1,9 +1,11 @@
 // The LP solver, branch-and-bound, model and checker on cases with known answers.
 
 #include <cmath>
+#include <map>
 #include <random>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "check.hpp"
@@ -403,6 +405,78 @@ void strike_dp() {
     CHECK(solve_strike_dp(bull, r, tiny).status == MipStatus::node_limit);
 }
 
+// docs/proofs.md, "Hardness", Theorem 4: one max-loss group decides whether exactly k of
+// n numbers sum to t. Every short is priced by R3 from call prices that are linear in the
+// strike, so nothing here is outside the rules. The exact optimum equals the proof's floor
+// exactly when such a subset exists, on branch-and-bound and on the strike DP.
+void subset_sum_reduction() {
+    RuleSet r;
+    std::mt19937_64 rng(5'175'000);
+    int yes = 0, no = 0, by_dp = 0;
+    for (int trial = 0; trial < 120; ++trial) {
+        const int n = 3 + trial % 6;
+        const int k = gen::uniform_int(rng, 2, n - 1);
+        std::vector<long> a(n);
+        long total = 0;
+        for (auto& v : a) total += v = gen::uniform_int(rng, 1, 12);
+        // Half the targets are the sum of a random k of the numbers.
+        long t = gen::uniform_int(rng, 1, static_cast<int>(total));
+        if (trial % 2 == 0) {
+            std::vector<long> pick = a;
+            t = 0;
+            for (int i = 0; i < k; ++i) {
+                std::swap(pick[i], pick[gen::uniform_int(rng, i, n - 1)]);
+                t += pick[i];
+            }
+        }
+        bool want = false;
+        for (unsigned mask = 0; mask < (1u << n); ++mask) {
+            long count = 0, sum = 0;
+            for (int i = 0; i < n; ++i)
+                if (mask >> i & 1) ++count, sum += a[i];
+            want = want || (count == k && sum == t);
+        }
+
+        // The proof's instance for the numbers 2k·a_i and the target 2k·t, in cents per
+        // share: a unit of size is 2k cents of strike, so that prices, which fall 1/(2k)
+        // per cent of strike, are whole cents.
+        long shift = 8 * total, target = t + k * shift, step = 2 * k;
+        long top_price = 1;
+        long spot = 2 * (top_price + target);
+        long low = (11 * spot + 9) / 10;  // every strike is at least 10% out of the money
+        long top = low + step * target;
+        Portfolio p;
+        p.market = Market{gen::cents(spot), Date{2026, 1, 15}};
+        auto leg = [&](long strike, std::int64_t quantity) {
+            OptionLeg l = option(OptionType::call, quantity, 0, 0);
+            l.option.strike = gen::cents(strike);
+            l.value = gen::cents(top_price + (top - strike) / step);
+            return l;
+        };
+        p.options.push_back(leg(low, 1));
+        p.options.push_back(leg(top, n));
+        std::map<long, std::int64_t> shorts;
+        for (long v : a) ++shorts[top - step * (v + shift)];
+        for (const auto& [strike, count] : shorts) p.options.push_back(leg(strike, -count));
+
+        // The floor: every position standalone, less the largest saving the proof allows,
+        // c·k + β·V per share, with c the part of R3 that does not depend on the strike.
+        Solution s = solve(p, r, exact);
+        Money c = gen::cents(top_price) + percent(10) * gen::cents(spot);
+        Money floor = s.all_standalone - (c * k + gen::cents(target)) * 100;
+        CHECK(s.status == MipStatus::optimal);
+        CHECK(s.total >= floor);
+        CHECK_EQ(s.total == floor, want);
+        Solution d = solve_strike_dp(p, r);
+        if (d.status == MipStatus::optimal) {
+            CHECK_EQ(d.total, s.total);
+            ++by_dp;
+        }
+        (want ? yes : no)++;
+    }
+    CHECK(yes > 30 && no > 30 && by_dp > 60);
+}
+
 // Book: pricing an order from the book's optimum must give what an exact cold solve of the
 // book after the order gives, whichever path it takes: bounds only (a resize), or a new
 // model (a new series, a close, a sign flip, stock). Filling it must leave the book where a
@@ -491,6 +565,7 @@ int run_solver_tests() {
     run("greedy_baseline", greedy_baseline);
     run("compact_straddles", compact_straddles);
     run("strike_dp", strike_dp);
+    run("subset_sum_reduction", subset_sum_reduction);
     run("book_orders", book_orders);
     ::check::context().clear();
     return groups;
