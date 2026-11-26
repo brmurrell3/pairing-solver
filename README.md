@@ -1,5 +1,7 @@
 # pairing-solver
 
+[![CI](https://github.com/brmurrell3/pairing-solver/actions/workflows/ci.yml/badge.svg)](https://github.com/brmurrell3/pairing-solver/actions/workflows/ci.yml)
+
 A C++20 library that finds the lowest strategy-based margin requirement for a book of
 options and stock.
 
