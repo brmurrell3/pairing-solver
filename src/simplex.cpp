@@ -103,6 +103,7 @@ DualSimplex::DualSimplex(const Lp& lp) : lp_(lp), m_(lp.rows()), n_(lp.cols()) {
     }
     for (int j = 0; j < n_; ++j) state_[j] = cost_[j] >= 0 ? at_lower : at_upper;
     rho_.assign(m_, 0.0);
+    in_cand_.assign(n_ + m_, 0);
     work_.assign(m_, 0.0);
     work2_.assign(m_, 0.0);
     refactor();
@@ -592,16 +593,31 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         //
         // The pivot row alpha = rho·[A, -I] is formed row by row from rho's nonzeros, which
         // are about 20% of rho on a 1,000-series book; column by column it cost a pass over
-        // every nonzero of A per iteration.
-        std::fill(alpha_.begin(), alpha_.begin() + n_, 0.0);
+        // every nonzero of A per iteration. Only the variables it touches (cand_) can enter, so
+        // the ratio test and the reduced-cost update run over those, not all n + m: on a
+        // 1,000-series book those passes were half the time of a cold solve.
+        for (int j : cand_) {
+            alpha_[j] = 0;
+            in_cand_[j] = 0;
+        }
+        cand_.clear();
         for (int i = 0; i < m_; ++i) {
             const double v = rho[i];
-            alpha_[n_ + i] = -v;
             if (v == 0) continue;
-            for (int e = row_start_[i]; e < row_start_[i + 1]; ++e) alpha_[row_col_[e]] += v * row_value_[e];
+            alpha_[n_ + i] = -v;
+            cand_.push_back(n_ + i);
+            for (int e = row_start_[i]; e < row_start_[i + 1]; ++e) {
+                const int j = row_col_[e];
+                alpha_[j] += v * row_value_[e];
+                if (!in_cand_[j]) {
+                    in_cand_[j] = 1;
+                    cand_.push_back(j);
+                }
+            }
         }
+        for (int j : cand_) in_cand_[j] = 1;
         double theta_max = lp_infinity;
-        for (int j = 0; j < n_ + m_; ++j) {
+        for (int j : cand_) {
             if (state_[j] == basic || lo_[j] == up_[j]) continue;
             double delta = -s * alpha_[j];
             bool eligible = state_[j] == at_lower ? delta > pivot_tol : delta < -pivot_tol;
@@ -609,7 +625,7 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         }
         int q = -1;
         double q_key = 0;
-        for (int j = 0; j < n_ + m_; ++j) {
+        for (int j : cand_) {
             if (state_[j] == basic || lo_[j] == up_[j]) continue;
             double delta = -s * alpha_[j];
             bool eligible = state_[j] == at_lower ? delta > pivot_tol : delta < -pivot_tol;
@@ -663,7 +679,7 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
 
         double delta_q = -s * alpha_[q];
         double theta = std::max(0.0, d_[q] / delta_q);  // Harris may accept a slightly wrong-signed d_q
-        for (int j = 0; j < n_ + m_; ++j)
+        for (int j : cand_)
             if (state_[j] != basic) d_[j] -= theta * (-s * alpha_[j]);
         d_[p] = s * theta;
         d_[q] = 0;
@@ -702,13 +718,14 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
             if (restore_dual_feasibility(dual_tol)) compute_primal();
         }
         // The dual objective rises by theta times the violation removed.
-        if (!stuck) {
+        // Checked every 8 pivots: the sum is a pass over the columns.
+        if (!stuck && iterations % 8 == 0) {
             double objective = 0;
             for (int j = 0; j < n_; ++j) objective += cost_[j] * x_[j];
             if (objective > best_objective + 1e-9 * (1 + std::fabs(objective))) {
                 best_objective = objective;
                 since_rise = 0;
-            } else if (++since_rise > 10L * (m_ + n_)) {
+            } else if ((since_rise += 8) > 10L * (m_ + n_)) {
                 if (true_cost.empty() && perturbations < 3) {
                     ++perturbations;
                     true_cost = cost_;

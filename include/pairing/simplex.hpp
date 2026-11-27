@@ -114,6 +114,8 @@ private:
     Factor factor_;
     std::vector<double> norm_;  // per basis position: squared norm of B⁻¹'s row, for steepest-edge pricing
     std::vector<double> rho_, work_, work2_;  // row r of B⁻¹; scratch for solves
+    std::vector<int> cand_;                   // variables with a nonzero in the pivot row
+    std::vector<char> in_cand_;
     std::vector<double> x_, d_, alpha_;
     int since_refactor_ = 0;
     bool primal_current_ = false;  // x_ matches the basis and bounds (pivots and set_bounds keep it)
