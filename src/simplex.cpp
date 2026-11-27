@@ -646,8 +646,11 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         // as the violation x_p has left exceeds what flipping that boxed variable to its other
         // bound removes. Passed breakpoints flip (one solve updates x_B for all of them) and
         // the entering variable is the first that would overshoot. Harris's choice stands
-        // when nothing would flip or the long step's pivot is small.
-        if (q >= 0 && !bland && eligible_.size() > 1) {
+        // when nothing would flip or the long step's pivot is small, and for a solve's first
+        // 20 pivots: a warm re-solve after a small bound change is a few pivots from the
+        // optimum, and long steps there took some orders on a 1,000-series book from 10 to
+        // 250 pivots.
+        if (q >= 0 && !bland && eligible_.size() > 1 && iterations >= 20) {
             breaks_.clear();
             for (int j : eligible_) {
                 const double delta = -s * alpha_[j];
