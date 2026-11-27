@@ -84,6 +84,8 @@ public:
         std::vector<double> diag_;
         std::vector<int> u_start_, u_pivot_;  // U by pivot: entries in earlier pivots' rows
         std::vector<double> u_value_;
+        std::vector<int> ur_start_, ur_pivot_;  // the same entries by earlier pivot, for btran
+        std::vector<double> ur_value_;
         std::vector<int> l_row_, l_start_, l_index_;  // L as elimination steps on rows
         std::vector<double> l_value_;
         std::vector<int> eta_r_, eta_start_, eta_index_;
@@ -115,6 +117,7 @@ private:
     std::vector<double> x_, d_, alpha_;
     int since_refactor_ = 0;
     bool primal_current_ = false;  // x_ matches the basis and bounds (pivots and set_bounds keep it)
+    bool dual_current_ = false;    // d_ matches the basis and costs (pivots keep it; bounds do not enter)
 
     double nonbasic_value(int j) const;
     double dot_row(const double* rho, int j) const;

@@ -110,7 +110,7 @@ DualSimplex::DualSimplex(const Lp& lp) : lp_(lp), m_(lp.rows()), n_(lp.cols()) {
 }
 
 void DualSimplex::restore(Snapshot s) {
-    primal_current_ = false;
+    primal_current_ = dual_current_ = false;
     head_ = std::move(s.head);
     state_ = std::move(s.state);
     factor_ = std::move(s.factor);
@@ -315,6 +315,19 @@ void DualSimplex::Factor::factor(int m, const std::vector<std::vector<Lp::Entry>
             l_start_.push_back(static_cast<int>(l_index_.size()));
         }
     }
+    // U again by the earlier pivot, so btran can push each solved value forward and skip
+    // the zeros: a row of B⁻¹ is about 20% dense, and the dot-product form read all of U.
+    ur_start_.assign(m + 1, 0);
+    for (int e = 0; e < static_cast<int>(u_pivot_.size()); ++e) ++ur_start_[u_pivot_[e] + 1];
+    for (int t = 0; t < m; ++t) ur_start_[t + 1] += ur_start_[t];
+    ur_pivot_.resize(u_pivot_.size());
+    ur_value_.resize(u_pivot_.size());
+    std::vector<int> next(ur_start_.begin(), ur_start_.end() - 1);
+    for (int t = 0; t < m; ++t)
+        for (int e = u_start_[t]; e < u_start_[t + 1]; ++e) {
+            ur_pivot_[next[u_pivot_[e]]] = t;
+            ur_value_[next[u_pivot_[e]]++] = u_value_[e];
+        }
 }
 
 void DualSimplex::Factor::ftran(std::vector<double>& v, std::vector<double>& out) const {
@@ -344,9 +357,10 @@ void DualSimplex::Factor::btran(std::vector<double>& c, std::vector<double>& y) 
         c[eta_r_[q]] = s;
     }
     for (int t = 0; t < m_; ++t) {
-        double v = c[position_[t]];
-        for (int e = u_start_[t]; e < u_start_[t + 1]; ++e) v -= u_value_[e] * y[row_[u_pivot_[e]]];
-        y[row_[t]] = v / diag_[t];
+        const double v = c[position_[t]] / diag_[t];
+        y[row_[t]] = v;
+        if (v == 0) continue;
+        for (int e = ur_start_[t]; e < ur_start_[t + 1]; ++e) c[position_[ur_pivot_[e]]] -= ur_value_[e] * v;
     }
     for (std::size_t l = l_row_.size(); l-- > 0;) {
         double acc = 0;
@@ -378,7 +392,7 @@ void DualSimplex::refactor() {
     std::vector<std::pair<int, int>> repairs;
     factor_.factor(m_, cols, repairs);
     for (auto [k, row] : repairs) {
-        primal_current_ = false;
+        primal_current_ = dual_current_ = false;
         state_[head_[k]] = at_lower;
         head_[k] = n_ + row;
         state_[n_ + row] = basic;
@@ -409,6 +423,7 @@ void DualSimplex::compute_dual() {
     for (int k = 0; k < m_; ++k) c[k] = cost_[head_[k]];
     factor_.btran(c, pi);
     for (int j = 0; j < n_ + m_; ++j) d_[j] = state_[j] == basic ? 0.0 : cost_[j] - dot_row(pi.data(), j);
+    dual_current_ = true;
 }
 
 // Every variable is boxed or carries an artificial bound, so a wrong-signed reduced cost
@@ -459,7 +474,7 @@ int DualSimplex::choose_row(bool bland, double slack) const {
 }
 
 void DualSimplex::load(const LpBasis& b) {
-    primal_current_ = false;
+    primal_current_ = dual_current_ = false;
     if (static_cast<int>(b.head.size()) != m_ || static_cast<int>(b.state.size()) != n_ + m_)
         throw std::invalid_argument("basis has the wrong size");
     head_ = b.head;
@@ -490,7 +505,7 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
         if (lo_[j] > up_[j]) return finish(LpStatus::infeasible, 0);
     if (!start.empty() && (start.head != head_ || start.state != state_)) load(start);
     if (!primal_current_) compute_primal();
-    compute_dual();
+    if (!dual_current_) compute_dual();
     if (restore_dual_feasibility(dual_tol)) compute_primal();
 
     int iterations = 0, degenerate = 0, checks = 0;
