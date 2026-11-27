@@ -38,6 +38,11 @@ struct SolveOptions {
     // class has more put-call pairs than this; otherwise one template per pair, which
     // branches faster on small books. Both give the same optimum.
     std::int64_t compact_straddle_pairs = 256;
+    // The compact form's matching rows: written directly, a class of k shorts adds O(k²)
+    // nonzeros; above this many shorts, a running balance with O(k) instead. Both give the
+    // same optimum. 2,000 (agent's choice, docs/plan.md Phase 8): a 5,000-series book's class
+    // of 2,531 shorts takes the balance, a 1,000-series book's of 487 does not.
+    int straddle_chain_shorts = 2000;
     // false: no short straddles (R6), a template policy (spec §3.3). The strike dynamic
     // program does not model them, so its tests compare against the solver with them off.
     bool straddles = true;
@@ -153,7 +158,8 @@ struct Model {
     struct Column {
         // straddle_cheap and straddle_expensive: lots of a short option that join short
         // straddles (R6) on the cheaper or the dearer side; see Builder::straddles.
-        enum Kind { template_unit, member, loss, aggregate, straddle_cheap, straddle_expensive } kind;
+        // straddle_balance: a running balance of one class's cheap and dear lots by rank.
+        enum Kind { template_unit, member, loss, aggregate, straddle_cheap, straddle_expensive, straddle_balance } kind;
         int index;  // template, group, or straddle class
         int position = 0;
         int rank = 0;  // straddle columns: the option's place in its class's order

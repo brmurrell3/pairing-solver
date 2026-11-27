@@ -63,8 +63,9 @@ struct Builder {
 
     std::int64_t compact_straddle_pairs;
     bool straddles_on;
-    Builder(const Portfolio& p_, const RuleSet& r_, std::int64_t lots_, std::int64_t compact, bool straddles_)
-        : p(p_), r(r_), lots(lots_), compact_straddle_pairs(compact), straddles_on(straddles_) {
+    int straddle_chain_shorts;
+    Builder(const Portfolio& p_, const RuleSet& r_, std::int64_t lots_, std::int64_t compact, bool straddles_, int chain)
+        : p(p_), r(r_), lots(lots_), compact_straddle_pairs(compact), straddles_on(straddles_), straddle_chain_shorts(chain) {
         n = static_cast<int>(p.options.size());
         has_stock = p.stock.shares != 0;
         m.lots_per_contract = lots;
@@ -298,23 +299,58 @@ struct Builder {
         }
         // For each direction (cheap puts against dear calls, cheap calls against dear puts):
         // total cheap lots equal total dear lots, and for every rank t the cheap lots ranked
-        // t or higher do not exceed the dear lots ranked above t.
+        // t or higher do not exceed the dear lots ranked above t. Written directly those are
+        // k suffix rows of O(k) entries (suffix_rows below): on a 5,000-series book 870,000 of
+        // the basis's 935,000 nonzeros, and so most of every solve. Above
+        // SolveOptions::straddle_chain_shorts shorts, a running balance over the
+        // ranks that carry a column of this direction, highest first: A_j = A_{j+1} + dear_j
+        // - cheap_j with A_j >= 0 and A_0 = 0. A_j is the dear lots ranked at or above a_j
+        // less the cheap lots there, so at a cheap rank A_j = A_{j+1} - cheap_j >= 0 is that
+        // rank's suffix row, and A_0 = 0 the total. Each row has at most 4 entries.
+        if (k <= straddle_chain_shorts) {
+            suffix_rows(order, cheap, dear, cls_key);
+            return;
+        }
+        for (int cheap_type : {1, 0}) {
+            std::vector<int> active;
+            for (int rank = 0; rank < k; ++rank) {
+                const bool is_cheap = std::get<1>(order[rank]) == cheap_type;
+                if ((is_cheap && cheap[rank] >= 0) || (!is_cheap && dear[rank] >= 0)) active.push_back(rank);
+            }
+            std::vector<int> balance(active.size()), balance_row(active.size());
+            for (std::size_t j = 0; j < active.size(); ++j) {
+                const std::int64_t at = series(std::get<2>(order[active[j]]));
+                balance_row[j] = row(0, 0, Key{} << 'v' << cls_key << cheap_type << at);
+                balance[j] = column(0, 0, j == 0 ? 0 : lp_infinity, {{balance_row[j], 1.0}},
+                                    Key{} << 'w' << cls_key << cheap_type << at);
+                m.integer.push_back(false);
+                m.column.push_back({Model::Column::straddle_balance, cls});
+                const int rank = active[j];
+                if (std::get<1>(order[rank]) == cheap_type) m.lp.columns[cheap[rank]].push_back({balance_row[j], 1.0});
+                else m.lp.columns[dear[rank]].push_back({balance_row[j], -1.0});
+            }
+            for (std::size_t j = 0; j + 1 < active.size(); ++j) m.lp.columns[balance[j + 1]].push_back({balance_row[j], -1.0});
+        }
+    }
+
+    // The direct form: per direction a total row and a suffix row per cheap rank. Fewer rows
+    // and pivots than the running balance, so it stays for classes of up to
+    // straddle_chain_shorts shorts (a 1,000-series book solved 2.1 times slower cold with the
+    // balance everywhere).
+    void suffix_rows(const std::vector<std::tuple<Money, int, int>>& order, const std::vector<int>& cheap,
+                     const std::vector<int>& dear, std::int64_t cls_key) {
+        const int k = static_cast<int>(order.size());
         for (int cheap_type : {1, 0}) {
             int total = row(0, 0, Key{} << 'u' << cls_key << cheap_type);
-            bool any = false;
             for (int rank = 0; rank < k; ++rank) {
                 const int type = std::get<1>(order[rank]);
-                if (type == cheap_type && cheap[rank] >= 0) {
-                    m.lp.columns[cheap[rank]].push_back({total, 1.0});
-                    any = true;
-                }
+                if (type == cheap_type && cheap[rank] >= 0) m.lp.columns[cheap[rank]].push_back({total, 1.0});
                 if (type != cheap_type && dear[rank] >= 0) m.lp.columns[dear[rank]].push_back({total, -1.0});
             }
-            (void)any;
             for (int t = 0; t < k; ++t) {
                 if (std::get<1>(order[t]) != cheap_type || cheap[t] < 0) continue;
                 // dear lots ranked above t, less cheap lots ranked t or higher, at least 0
-                int row = this->row(0, lp_infinity, Key{} << 'v' << cls_key << cheap_type << series(std::get<2>(order[t])));
+                int row = this->row(0, lp_infinity, Key{} << 's' << cls_key << cheap_type << series(std::get<2>(order[t])));
                 for (int rank = t; rank < k; ++rank) {
                     const int type = std::get<1>(order[rank]);
                     if (type == cheap_type && cheap[rank] >= 0) m.lp.columns[cheap[rank]].push_back({row, -1.0});
@@ -574,7 +610,7 @@ struct Builder {
 
 Model build_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     if (o.lots_per_contract < 1) throw std::invalid_argument("lots per contract must be at least 1");
-    Builder b(p, r, o.lots_per_contract, o.compact_straddle_pairs, o.straddles);
+    Builder b(p, r, o.lots_per_contract, o.compact_straddle_pairs, o.straddles, o.straddle_chain_shorts);
     b.capacities();
     b.templates();
     b.long_boxes();
@@ -599,7 +635,9 @@ Solution read_solution(const Model& m, const Portfolio& p, const std::vector<dou
     std::vector<std::vector<Lots>> straddle_lots(m.straddle_classes);
     for (int j = 0; j < m.lp.cols(); ++j) {
         const auto& c = m.column[j];
-        if (c.kind == Model::Column::loss || c.kind == Model::Column::aggregate) continue;
+        if (c.kind == Model::Column::loss || c.kind == Model::Column::aggregate ||
+            c.kind == Model::Column::straddle_balance)
+            continue;
         if (c.kind == Model::Column::straddle_cheap || c.kind == Model::Column::straddle_expensive) {
             std::int64_t v = std::llround(x[j]);
             if (std::fabs(x[j] - static_cast<double>(v)) > 1e-6) throw std::logic_error("solution is not on the grid");

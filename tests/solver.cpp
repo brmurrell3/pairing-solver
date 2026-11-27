@@ -318,12 +318,16 @@ void compact_straddles() {
         shape.adjusted = k % 4 == 0;
         Portfolio p = gen::portfolio(rng, shape);
         RuleSet rr = gen::rules(rng, rules[k % 3]);
-        SolveOptions pairs{1, 0}, compact{1, 0};
+        SolveOptions pairs{1, 0}, compact{1, 0}, chain{1, 0};
         pairs.compact_straddle_pairs = 1'000'000;
         compact.compact_straddle_pairs = 0;
-        Solution a = solve(p, rr, pairs), b = solve(p, rr, compact);
+        chain.compact_straddle_pairs = 0;
+        chain.straddle_chain_shorts = 0;  // the running-balance form of the matching rows
+        Solution a = solve(p, rr, pairs), b = solve(p, rr, compact), c = solve(p, rr, chain);
         CHECK_EQ(a.total, b.total);
+        CHECK_EQ(a.total, c.total);
         CHECK(near(a.lp_bound, b.lp_bound));
+        CHECK(near(a.lp_bound, c.lp_bound));
         for (const auto& st : b.structures) used += st.kind == StructureKind::straddle;
     }
     CHECK(used > 100);  // the comparison exercised the compact form
