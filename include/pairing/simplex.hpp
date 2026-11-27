@@ -117,7 +117,9 @@ private:
     std::vector<double> x_, d_, alpha_;
     int since_refactor_ = 0;
     bool primal_current_ = false;  // x_ matches the basis and bounds (pivots and set_bounds keep it)
-    bool dual_current_ = false;    // d_ matches the basis and costs (pivots keep it; bounds do not enter)
+    bool dual_current_ = false;
+    int pivots_since_compute_ = 0;
+    bool artificial_in_use_ = true;  // some nonbasic variable sits at an artificial bound  // pivots since x_ and d_ were last computed from scratch    // d_ matches the basis and costs (pivots keep it; bounds do not enter)
 
     double nonbasic_value(int j) const;
     double dot_row(const double* rho, int j) const;

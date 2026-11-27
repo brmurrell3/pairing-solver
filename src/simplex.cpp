@@ -404,17 +404,20 @@ void DualSimplex::refactor() {
 // x_B = -B⁻¹ N x_N, since [A, -I] x = 0.
 void DualSimplex::compute_primal() {
     std::vector<double> r(m_, 0.0);
+    artificial_in_use_ = false;
     for (int j = 0; j < n_ + m_; ++j) {
         if (state_[j] == basic) continue;
         double v = nonbasic_value(j);
         x_[j] = v;
         if (v == 0) continue;
+        if (!std::isfinite(state_[j] == at_upper ? up_[j] : lo_[j])) artificial_in_use_ = true;
         if (j >= n_) r[j - n_] -= v;
         else
             for (const auto& e : lp_.columns[j]) r[e.row] += e.value * v;
     }
     factor_.ftran(r, work2_);
     for (int k = 0; k < m_; ++k) x_[head_[k]] = -work2_[k];
+    pivots_since_compute_ = 0;
     primal_current_ = true;
 }
 
@@ -546,8 +549,15 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
             // HiGHS tests still agree to 1e-14.
             if (++checks > 50) break;
             if (since_refactor_ >= 32 || (since_refactor_ > 0 && checks > 1)) refactor();
-            compute_primal();
-            compute_dual();
+            // After a handful of pivots the kept values are as good as recomputed ones, and the
+            // recomputation (a solve and a pass over A each) was a quarter of an order's time
+            // on a 1,000-series book, whose dive solves take a few pivots each.
+            // Not when a nonbasic variable sits at an artificial bound: values updated from
+            // 1e9 lose the digits a recomputation keeps.
+            if (pivots_since_compute_ >= 8 || checks > 1 || since_refactor_ == 0 || artificial_in_use_) {
+                compute_primal();
+                compute_dual();
+            }
             // Each refactorization moves reduced costs near zero by rounding noise of about
             // dual_tol, and two such columns can flip each other's bound forever. A widening
             // threshold on repeated checks ends that; it costs at most 100·dual_tol per unit
@@ -684,6 +694,7 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
 
         ++iterations;
         confirmed_row = -1;
+        ++pivots_since_compute_;
         if (++since_refactor_ >= refactor_every) {
             refactor();
             compute_primal();
