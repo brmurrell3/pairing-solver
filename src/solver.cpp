@@ -855,12 +855,50 @@ std::vector<double> map_assignment(const Model& from, const std::vector<double>&
 
 }  // namespace
 
-Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
-    Model m = build_model(p, r, o);
-    return solve_model(p, r, o, m, nullptr, nullptr, nullptr);
+Portfolio canonical(const Portfolio& p, std::vector<int>* original) {
+    std::vector<int> order(p.options.size());
+    std::iota(order.begin(), order.end(), 0);
+    auto key = [&](int i) {
+        const Option& o = p.options[i].option;
+        return std::make_tuple(std::cref(o.underlying), static_cast<int>(o.product), static_cast<int>(o.type), o.expiry,
+                               o.strike, o.deliverable, static_cast<int>(o.style), static_cast<int>(o.listing),
+                               p.options[i].quantity, p.options[i].value);
+    };
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return key(a) < key(b); });
+    Portfolio q = p;
+    for (std::size_t k = 0; k < order.size(); ++k) q.options[k] = p.options[order[k]];
+    if (original) *original = std::move(order);
+    return q;
 }
 
-Book::Book(Portfolio p, RuleSet r, SolveOptions o) : p_(std::move(p)), r_(std::move(r)), o_(std::move(o)) {
+// The model's column and row order, the simplex's pivots and so which of several
+// near-optimal pairings branch-and-bound returns all follow the order of the positions.
+// Solving in canonical order makes the answer a function of the positions alone; it is
+// then reported in the caller's order.
+Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
+    std::vector<int> original;
+    const Portfolio q = canonical(p, &original);
+    Model m = build_model(q, r, o);
+    Solution s = solve_model(q, r, o, m, nullptr, nullptr, nullptr);
+    bool identity = true;
+    for (std::size_t k = 0; k < original.size(); ++k) identity &= original[k] == static_cast<int>(k);
+    if (identity) return s;
+    auto back = [&](int& position) {
+        if (position != stock_position) position = original[position];
+    };
+    for (auto& st : s.structures)
+        for (auto& l : st.legs) back(l.position);
+    for (auto& res : s.residuals) back(res.leg.position);
+    std::vector<double> shadow(s.shadow_options.size());
+    for (std::size_t k = 0; k < original.size(); ++k) shadow[original[k]] = s.shadow_options[k];
+    s.shadow_options = std::move(shadow);
+    return s;
+}
+
+Book::Book(Portfolio p, RuleSet r, SolveOptions o) : r_(std::move(r)), o_(std::move(o)) { reset(std::move(p)); }
+
+void Book::reset(Portfolio p) {
+    p_ = canonical(p, nullptr);
     model_ = std::make_unique<Model>(build_model(p_, r_, o_));
     simplex_ = std::make_unique<DualSimplex>(model_->lp);
     SolveOptions cold = o_;
@@ -912,9 +950,9 @@ void Book::index_model() {
 // the position, its groups' loss column and loss rows, the suffix rows it enters, and the
 // share-size aggregates over it. Updating those in place skips rebuilding the model (5.8 ms
 // at 1,000 series) and comparing its shape. Suffix rows the position does not enter keep
-// their old bound, which stays valid (it is implied by the members). With keep, the book
-// takes the change; otherwise every bound is put back.
-Solution Book::price_resize(int i, std::int64_t quantity, bool keep) {
+// their old bound, which stays valid (it is implied by the members). Every bound is put
+// back afterwards.
+Solution Book::price_resize(int i, std::int64_t quantity) {
     Model& m = *model_;
     Lp& lp = m.lp;
     const std::int64_t lots = m.lots_per_contract;
@@ -999,11 +1037,7 @@ Solution Book::price_resize(int i, std::int64_t quantity, bool keep) {
     std::vector<double> x;
     const bool fits = feasible(lp, x_);
     Solution s = run(q, m, simplex_.get(), fits ? &x_ : nullptr, &x, &x_, {});
-    if (keep && !lp_only_) {
-        p_ = std::move(q);
-        s_ = s;
-        x_ = std::move(x);
-    } else {
+    {
         for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
             if (it->row) {
                 lp.row_up[it->index] = it->up;
@@ -1284,7 +1318,7 @@ Solution Book::evaluate(const OptionLeg& order) {
             const std::int64_t q = p_.options[i].quantity, after = q + order.quantity;
             if (after == 0) return price_close(static_cast<int>(i));
             if ((after > 0) == (q > 0) && order.value == p_.options[i].value)
-                return price_resize(static_cast<int>(i), after, false);
+                return price_resize(static_cast<int>(i), after);
         }
     }
     Trial t = price(after(order));
@@ -1298,41 +1332,15 @@ Solution Book::what_if_stock(std::int64_t shares) {
     return std::move(t.solution);
 }
 
-void Book::commit(Trial t) {
-    p_ = std::move(t.portfolio);
-    s_ = std::move(t.solution);
-    x_ = std::move(t.x);
-    if (t.shape_kept) {
-        // The simplex refers to model_->lp, whose matrix is t's; only the bounds move.
-        model_->lp.col_lo = t.model->lp.col_lo;
-        model_->lp.col_up = t.model->lp.col_up;
-        model_->lp.row_lo = t.model->lp.row_lo;
-        model_->lp.row_up = t.model->lp.row_up;
-        model_->constant = t.model->constant;
-        model_->capacity_row = t.model->capacity_row;
-        model_->capacity_column = t.model->capacity_column;
-    } else {
-        model_ = std::move(t.model);
-        simplex_ = std::make_unique<DualSimplex>(model_->lp);
-        index_model();
-    }
-}
 
-void Book::fill(const OptionLeg& order) {
-    for (std::size_t i = 0; i < p_.options.size(); ++i) {
-        const Option &a = p_.options[i].option, &b = order.option;
-        if (a.underlying == b.underlying && a.type == b.type && a.strike == b.strike && a.expiry == b.expiry &&
-            a.style == b.style && a.listing == b.listing && a.deliverable == b.deliverable && a.product == b.product) {
-            const std::int64_t q = p_.options[i].quantity, after = q + order.quantity;
-            if (after != 0 && (after > 0) == (q > 0) && order.value == p_.options[i].value) {
-                price_resize(static_cast<int>(i), after, true);
-                return;
-            }
-        }
-    }
-    commit(price(after(order)));
-}
+// A fill re-solves the book cold, so the book's state (its pairing, basis and model) is
+// what a new Book on the same positions would hold: what_if then depends on the positions
+// and the order, never on the orders that came before. That costs a cold solve per fill
+// (35 ms at 1,000 series) instead of a warm one (3 ms); fills are not on the pre-trade path.
+void Book::fill(const OptionLeg& order) { reset(after(order)); }
 
-void Book::fill_stock(std::int64_t shares) { commit(price(after_stock(shares))); }
+void Book::fill_stock(std::int64_t shares) { reset(after_stock(shares)); }
+
+Solution Book::canonical_what_if(const OptionLeg& order) const { return solve(after(order), r_, o_); }
 
 }  // namespace pairing

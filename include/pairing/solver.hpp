@@ -109,6 +109,12 @@ struct Solution {
     LpBasis root_basis;  // for SolveOptions::warm_start on the next account
 };
 
+// The positions sorted by series (underlying, product, type, expiration, strike,
+// deliverable, style, listing), then quantity and value. original, if given, receives each
+// sorted position's index in p. solve() and Book work in this order, so their answers do
+// not depend on the order positions are listed in.
+Portfolio canonical(const Portfolio& p, std::vector<int>* original = nullptr);
+
 Solution solve(const Portfolio& p, const RuleSet& r, const SolveOptions& o = {});
 
 // The Phase 3 baseline: fixed template priority (verticals and calendars, merged into iron
@@ -188,6 +194,7 @@ public:
     Book(const Book&) = delete;
     Book& operator=(const Book&) = delete;
 
+    // In canonical order (see canonical()); solution positions index into it.
     const Portfolio& portfolio() const { return p_; }
     const Solution& solution() const { return s_; }
 
@@ -212,7 +219,14 @@ public:
     // exceeds the limit, even if a better one, within rel_gap of it, might not).
     bool fits(const OptionLeg& order, Money limit);
 
-    // Fills the order: the book's portfolio and solution become what_if's.
+    // The answer solve() gives for the book after the order: a cold solve, so a function of
+    // the resulting positions alone, bit for bit, whatever the book's history. what_if is
+    // warm-started and can return a different pairing within rel_gap (on a 1,000-series
+    // book, totals up to 0.007% apart); this costs a cold solve instead (about 35 ms there).
+    Solution canonical_what_if(const OptionLeg& order) const;
+
+    // Fills the order. The book is then re-solved cold, so its state, and every later
+    // what_if, is the same as for a new Book on the same positions.
     void fill(const OptionLeg& order);
     void fill_stock(std::int64_t shares);
 
@@ -228,7 +242,7 @@ private:
     Portfolio after_stock(std::int64_t shares) const;
     Trial price(Portfolio q);
     Solution price_close(int position);
-    Solution price_resize(int position, std::int64_t quantity, bool keep);
+    Solution price_resize(int position, std::int64_t quantity);
     Solution evaluate(const OptionLeg& order);
     Solution run(const Portfolio& q, const Model& m, DualSimplex* simplex, const std::vector<double>* start,
                  std::vector<double>* x, const std::vector<double>* guide, const LpBasis& warm);
@@ -236,7 +250,7 @@ private:
     bool lp_only_ = false;
     void index_model();
     void restore_bounds();
-    void commit(Trial t);
+    void reset(Portfolio p);
 
     Portfolio p_;
     RuleSet r_;

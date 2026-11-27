@@ -1,5 +1,6 @@
 // The LP solver, branch-and-bound, model and checker on cases with known answers.
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <random>
@@ -549,6 +550,78 @@ void book_orders() {
     CHECK(bounded > 900);
 }
 
+// Determinism: the same positions give the same answer, bit for bit, whatever order they
+// are listed in, however often they are solved, and whichever orders led a Book to them.
+// Pairings are compared as sorted lists of structures named by series, not position index.
+std::vector<std::string> named_pairing(const Portfolio& p, const Solution& s) {
+    std::vector<std::string> out;
+    for (const auto& st : s.structures) {
+        std::vector<std::string> legs;
+        for (const auto& l : st.legs) {
+            std::string name = "S";
+            if (l.position != stock_position) {
+                const Option& o = p.options[l.position].option;
+                name = std::to_string(static_cast<int>(o.type)) + "/" + o.strike.str() + "/" + std::to_string(o.expiry.year) +
+                       "-" + std::to_string(o.expiry.month) + "/" + std::to_string(o.deliverable);
+            }
+            legs.push_back(name + "x" + std::to_string(l.quantity));
+        }
+        std::sort(legs.begin(), legs.end());
+        std::string k = kind_name(st.kind);
+        for (const auto& l : legs) k += " " + l;
+        out.push_back(k);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+void determinism() {
+    std::mt19937_64 rng(5'190'000);
+    const ExpiryRule rules[] = {ExpiryRule::pairwise, ExpiryRule::nearest_long, ExpiryRule::same_expiry};
+    int compared = 0;
+    for (int k = 0; k < 120; ++k) {
+        gen::Shape shape;
+        shape.max_series = 20;
+        shape.max_quantity = 8;
+        shape.adjusted = k % 4 == 0;
+        Portfolio p = gen::portfolio(rng, shape);
+        if (p.options.size() < 2) continue;
+        RuleSet rr = gen::rules(rng, rules[k % 3]);
+        const SolveOptions o;  // the default 1% gap, where near-optimal ties are many
+        Solution a = solve(p, rr, o), again = solve(p, rr, o);
+        CHECK_EQ(a.total, again.total);
+        CHECK(named_pairing(p, a) == named_pairing(p, again));
+        Portfolio shuffled = p;
+        gen::shuffle(shuffled.options, rng);
+        Solution b = solve(shuffled, rr, o);
+        CHECK_EQ(a.total, b.total);
+        CHECK(named_pairing(p, a) == named_pairing(shuffled, b));
+
+        // Two orders filled one after the other, against a new Book on the result.
+        Book book(p, rr, o);
+        for (int t = 0; t < 2; ++t) {
+            OptionLeg order = book.portfolio().options[gen::uniform_int(rng, 0, static_cast<int>(book.portfolio().options.size()) - 1)];
+            const std::int64_t q = order.quantity;
+            order.quantity = q > 1 ? -1 : 1;
+            book.fill(order);
+        }
+        Book fresh(book.portfolio(), rr, o);
+        CHECK_EQ(book.solution().total, fresh.solution().total);
+        CHECK(named_pairing(book.portfolio(), book.solution()) == named_pairing(fresh.portfolio(), fresh.solution()));
+        CHECK_EQ(book.solution().total, solve(book.portfolio(), rr, o).total);
+        OptionLeg next = book.portfolio().options.front();
+        next.quantity = next.quantity > 0 ? 1 : -1;
+        Solution w1 = book.what_if(next), w2 = fresh.what_if(next);
+        CHECK_EQ(w1.total, w2.total);
+        CHECK(named_pairing(book.portfolio(), w1) == named_pairing(fresh.portfolio(), w2));
+        Portfolio after = book.portfolio();
+        after.options.front().quantity += next.quantity;
+        CHECK_EQ(book.canonical_what_if(next).total, solve(after, rr, o).total);
+        ++compared;
+    }
+    CHECK(compared > 100);
+}
+
 }  // namespace
 
 int run_solver_tests() {
@@ -567,6 +640,7 @@ int run_solver_tests() {
     run("strike_dp", strike_dp);
     run("subset_sum_reduction", subset_sum_reduction);
     run("book_orders", book_orders);
+    run("determinism", determinism);
     ::check::context().clear();
     return groups;
 }
