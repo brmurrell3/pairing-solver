@@ -752,8 +752,12 @@ namespace {
 // solve() on a built model. simplex, if given, is built on a model with m's matrix and
 // costs and holds m's bounds; the search starts from its basis. start, if given, is a
 // feasible integer point of m. x receives the model's assignment.
+// carried, if given, is a valid pairing of p priced by the checker (a Book's previous pairing
+// carried over the order): its total is a cutoff, the dives get a pivot budget, and if the
+// search finds nothing better, carried is the answer.
 Solution solve_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o, const Model& m, DualSimplex* simplex,
-                     const std::vector<double>* start, std::vector<double>* x, const std::vector<double>* guide = nullptr) {
+                     const std::vector<double>* start, std::vector<double>* x, const std::vector<double>* guide = nullptr,
+                     const Solution* carried = nullptr) {
     // Integer assignments cost whole micro-dollars, so a node that cannot beat the
     // incumbent by half of one cannot beat it at all; the relative term absorbs LP rounding.
     double scale = std::fabs(dollars(m.constant));
@@ -770,12 +774,25 @@ Solution solve_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o
         mo.guide = *guide;
         for (double& v : mo.guide) v = std::round(v);  // only integer columns read it
     }
+    if (carried) {
+        mo.cutoff = dollars(carried->total) - dollars(m.constant);
+        mo.dive_pivot_limit = o.dive_pivot_limit;
+    }
     MipSolution mip = simplex ? branch_and_bound(*simplex, m.lp, m.integer, mo) : branch_and_bound(m.lp, m.integer, mo);
     if (mip.status != MipStatus::optimal && mip.status != MipStatus::node_limit)
         throw std::runtime_error(std::string("the subproblem did not solve: ") + status_name(mip.status));
 
-    Solution s = read_solution(m, p, mip.x);
-    s.total = check_solution(p, r, s);
+    Solution s;
+    if (mip.x.empty() && carried && m.lp.cols() > 0) {
+        // Nothing beat the carried pairing; the model holds no assignment for it.
+        s = *carried;
+        s.shadow_options.clear();
+        s.all_standalone = Money{};
+        mip.objective = dollars(s.total) - dollars(m.constant);
+    } else {
+        s = read_solution(m, p, mip.x);
+        s.total = check_solution(p, r, s);
+    }
     for (const auto& l : p.options) s.all_standalone += separate({l}, p.market, r).total();
     if (p.stock.shares != 0) s.all_standalone += stock(p.stock, r).total();
 
@@ -1227,8 +1244,23 @@ Solution Book::price_close(int i) {
         lp.col_up[j] = 0;
         simplex_->set_bounds(j, lp.col_lo[j], 0);
     }
+    // The carried pairing is of the book without position i; here i stays, standalone.
+    std::optional<Solution> carried_here;
+    const Solution* carried_outer = carried_;
+    if (carried_) {
+        carried_here = *carried_;
+        for (auto& st : carried_here->structures)
+            for (auto& l : st.legs)
+                if (l.position != stock_position && l.position >= i) ++l.position;
+        for (auto& res : carried_here->residuals)
+            if (res.leg.position != stock_position && res.leg.position >= i) ++res.leg.position;
+        carried_here->residuals.push_back({{i, std::llabs(p_.options[i].quantity) * model_->lots_per_contract}, {}});
+        carried_here->total = check_solution(p_, r_, *carried_here);
+        carried_ = &*carried_here;
+    }
     std::vector<double> x;
     Solution s = run(p_, *model_, simplex_.get(), nullptr, &x, &x_, {});
+    carried_ = carried_outer;
     for (auto [j, up] : held) lp.col_up[j] = up;
     restore_bounds();
     if (lp_only_) {
@@ -1267,7 +1299,7 @@ Solution Book::run(const Portfolio& q, const Model& m, DualSimplex* simplex, con
                    std::vector<double>* x, const std::vector<double>* guide, const LpBasis& warm) {
     SolveOptions so = o_;
     so.warm_start = warm;
-    if (!lp_only_) return solve_model(q, r_, so, m, simplex, start, x, guide);
+    if (!lp_only_) return solve_model(q, r_, so, m, simplex, start, x, guide, carried_);
     std::optional<DualSimplex> local;
     std::optional<DualSimplex::Snapshot> back;
     if (simplex) back = simplex->save();
@@ -1409,6 +1441,16 @@ bool Book::fits(const OptionLeg& order, Money limit) {
 Solution Book::what_if(const OptionLeg& order) { return evaluate(order); }
 
 Solution Book::evaluate(const OptionLeg& order) {
+    // The book's pairing carried over the order is a valid answer from the start: the search
+    // takes it as a cutoff and falls back on it past its pivot budget (bounds() needs only
+    // the relaxation and skips it).
+    std::optional<Solution> carried;
+    if (!lp_only_) carried = carry(order, after(order));
+    struct Clear {
+        const Solution*& c;
+        ~Clear() { c = nullptr; }
+    } clear{carried_};
+    carried_ = carried ? &*carried : nullptr;
     for (std::size_t i = 0; i < p_.options.size(); ++i) {
         const Option &a = p_.options[i].option, &b = order.option;
         if (a.underlying == b.underlying && a.type == b.type && a.strike == b.strike && a.expiry == b.expiry &&

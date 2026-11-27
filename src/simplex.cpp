@@ -539,7 +539,7 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
     };
     std::vector<double> w(m_);
     int confirmed_row = -1;  // a row whose infeasibility certificate passed the residual check
-    while (iterations < max_iterations) {
+    while (iterations < std::min(max_iterations, iteration_limit_)) {
         int r = choose_row(bland);
         if (r < 0) {
             // Confirm before declaring optimality: recompute the primal and dual values from
@@ -838,7 +838,10 @@ enum class Hold { none, all, at_bounds, agree };
 
 bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, const std::vector<int>& priority,
           const std::vector<double>* guide, LpSolution sol, double integer_tol, long& iterations, std::vector<double>& x,
-          double& objective, Hold hold = Hold::none) {
+          double& objective, Hold hold = Hold::none, long budget = -1) {
+    // budget: pivots this dive may spend (-1: no limit); past it the dive gives up.
+    const long iterations_at_start = iterations;
+    auto spent = [&] { return budget >= 0 && iterations - iterations_at_start > budget; };
     struct Fix {
         int col;
         double lo, up;  // the bounds before the fix
@@ -850,9 +853,13 @@ bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, 
     bool found = false;
     // Tries t for column j from basis b; on success the dive continues from the result.
     auto attempt = [&](int j, double t, const LpBasis& b) {
+        if (spent()) return false;
         if (t < simplex.lower(j) - 1e-9 || t > simplex.upper(j) + 1e-9) return false;
         simplex.set_bounds(j, t, t);
+        // A budgeted dive's solves stop at what is left of the budget.
+        if (budget >= 0) simplex.set_iteration_limit(static_cast<int>(std::max(1L, budget - (iterations - iterations_at_start))));
         LpSolution next = simplex.solve(b);
+        simplex.set_iteration_limit(std::numeric_limits<int>::max());
         iterations += next.iterations;
         if (next.status != LpStatus::optimal) return false;
         sol = std::move(next);
@@ -886,7 +893,10 @@ bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, 
             batch.push_back({j, simplex.lower(j), simplex.upper(j)});
             simplex.set_bounds(j, v, v);
         }
-        if (batch.size() < 10) {  // few to round: the one-at-a-time dive is cheap enough
+        // Few to round, and the one-at-a-time dive is cheap enough; with a pivot budget, the
+        // single unbudgeted solve could take more than the budget (900 pivots on a 5,000-series
+        // book) and the budget's fallback serves the slow orders instead.
+        if (batch.size() < 10 || budget >= 0) {
             for (auto it = batch.rbegin(); it != batch.rend(); ++it) simplex.set_bounds(it->col, it->lo, it->up);
             batch.clear();
         }
@@ -913,7 +923,7 @@ bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, 
             }
         }
     }
-    for (long steps = 0; steps <= 4L * lp.cols() + 100; ++steps) {
+    for (long steps = 0; steps <= 4L * lp.cols() + 100 && !spent(); ++steps) {
         int pick = -1, level = 0;
         double nearest = 1;
         for (int j = 0; j < lp.cols(); ++j) {
@@ -990,11 +1000,14 @@ MipSolution branch_and_bound(DualSimplex& simplex, const Lp& lp, const std::vect
     std::vector<Node> heap;  // open nodes, best bound on top
 
     MipSolution out;
-    double incumbent = lp_infinity;
+    double incumbent = o.cutoff;
     if (!o.start.empty()) {
-        incumbent = 0;
-        for (int j = 0; j < lp.cols(); ++j) incumbent += lp.cost[j] * o.start[j];
-        out.x = o.start;
+        double start = 0;
+        for (int j = 0; j < lp.cols(); ++j) start += lp.cost[j] * o.start[j];
+        if (start <= incumbent) {
+            incumbent = start;
+            out.x = o.start;
+        }
     }
     // A node is pruned when its bound b cannot beat the incumbent by more than the gap,
     // measured against offset + b: the gap is then relative to the optimum, not to the
@@ -1106,12 +1119,17 @@ MipSolution branch_and_bound(DualSimplex& simplex, const Lp& lp, const std::vect
             // within the gap of the root bound.
             auto try_dive = [&](Hold h) {
                 const std::vector<double>* g = h == Hold::agree ? &o.guide : nullptr;
-                return dive(simplex, lp, integer, o.priority, g, sol, integer_tol, out.iterations, x, obj, h);
+                return dive(simplex, lp, integer, o.priority, g, sol, integer_tol, out.iterations, x, obj, h, o.dive_pivot_limit);
             };
             const bool guided = o.guide.size() == static_cast<std::size_t>(lp.cols());
             bool found = sol.status == LpStatus::optimal &&
-                         (try_dive(Hold::all) || try_dive(Hold::at_bounds) || (guided && try_dive(Hold::agree)) ||
-                          (!(o.start.size() && incumbent < lp_infinity && prune_test(sol.objective)) && try_dive(Hold::none)));
+                         (try_dive(Hold::all) ||
+                          // With a dive budget, an incumbent that already meets the gap ends
+                          // the search once the first dive gives up: the later stages are
+                          // the slowest orders' cost.
+                          (!(o.dive_pivot_limit >= 0 && incumbent < lp_infinity && prune_test(sol.objective)) &&
+                           (try_dive(Hold::at_bounds) || (guided && try_dive(Hold::agree)) ||
+                            (!(incumbent < lp_infinity && prune_test(sol.objective)) && try_dive(Hold::none)))));
             if (found && obj < incumbent) {
                 incumbent = obj;
                 out.x = std::move(x);
@@ -1131,7 +1149,7 @@ MipSolution branch_and_bound(DualSimplex& simplex, const Lp& lp, const std::vect
             std::vector<double> x;
             double obj = 0;
             if (dive(simplex, lp, integer, o.priority, searched ? &out.x : nullptr, sol, integer_tol, out.iterations, x,
-                     obj) &&
+                     obj, Hold::none, o.dive_pivot_limit) &&
                 obj < incumbent) {
                 incumbent = obj;
                 out.x = std::move(x);

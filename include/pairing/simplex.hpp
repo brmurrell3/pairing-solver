@@ -60,6 +60,9 @@ public:
     // An empty start continues from the current basis: the slack basis on the first call,
     // otherwise the previous solve's.
     LpSolution solve(const LpBasis& start = {});
+    // Pivots a solve may take before it returns iteration_limit (default: no limit beyond
+    // the built-in 200,000).
+    void set_iteration_limit(int limit) { iteration_limit_ = limit; }
 
     // The basis factorization: B = L·U from a left-looking LU whose column order comes
     // from peeling row and column singletons (on a 1,000-series book 1,160 of 1,182 basis
@@ -120,6 +123,7 @@ private:
     std::vector<char> in_cand_;
     std::vector<double> x_, d_, alpha_;
     int since_refactor_ = 0;
+    int iteration_limit_ = std::numeric_limits<int>::max();
     bool primal_current_ = false;  // x_ matches the basis and bounds (pivots and set_bounds keep it)
     bool dual_current_ = false;
     int pivots_since_compute_ = 0;
@@ -160,6 +164,13 @@ struct MipOptions {
     // An integer point near which to look for an incumbent, feasible or not (empty: none),
     // such as the previous pairing of a book that has since changed.
     std::vector<double> guide;
+    // The objective of a feasible point known only by its value (lp_infinity: none), such as
+    // a pairing priced outside the model. Pruning uses it like an incumbent; if nothing beats
+    // it, the result has status optimal and an empty x.
+    double cutoff = lp_infinity;
+    // Pivots each rounding dive may spend before it gives up (-1: no limit). With a cutoff
+    // or start to fall back on, a limit bounds the slowest searches.
+    long dive_pivot_limit = -1;
     // Branching priority per column (empty: all equal). Fractional columns of the highest
     // priority present are branched on, and fixed by the root dive, first.
     std::vector<int> priority;

@@ -49,6 +49,13 @@ struct SolveOptions {
     // docs/plan.md Phase 8): a 5,000-series book's group (5,000 x about 1,250) takes the walk,
     // a 1,000-series book's (1,000 x about 250) does not.
     std::int64_t strike_walk_entries = 2'000'000;
+    // A Book's order search: each rounding dive's pivot budget, after which the order's
+    // answer is the better of what the search found and the book's pairing carried over the
+    // order (Book::bounds's upper bound), which the search starts from as a cutoff. 150
+    // (agent's choice, docs/plan.md Phase 8): on a 5,000-series book it took the per-order
+    // p99 from 108 to 99 ms or less at answers within 0.05% of a cold solve; a 1,000-series
+    // book's dives rarely reach it. solve() has no carried pairing and ignores it.
+    long dive_pivot_limit = 150;
     // false: no short straddles (R6), a template policy (spec §3.3). The strike dynamic
     // program does not model them, so its tests compare against the solver with them off.
     bool straddles = true;
@@ -270,6 +277,7 @@ private:
                  std::vector<double>* x, const std::vector<double>* guide, const LpBasis& warm);
     Solution carry(const OptionLeg& order, const Portfolio& q) const;
     bool lp_only_ = false;
+    const Solution* carried_ = nullptr;  // during evaluate(): the pairing carried over the order
     void index_model();
     void restore_bounds();
     void reset(Portfolio p);
