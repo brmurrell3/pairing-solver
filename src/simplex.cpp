@@ -642,6 +642,47 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
                 q_key = std::fabs(delta);
             }
         }
+        // Bound-flipping ratio test: the dual objective keeps rising past a breakpoint as long
+        // as the violation x_p has left exceeds what flipping that boxed variable to its other
+        // bound removes. Passed breakpoints flip (one solve updates x_B for all of them) and
+        // the entering variable is the first that would overshoot. Harris's choice stands
+        // when nothing would flip or the long step's pivot is small.
+        if (q >= 0 && !bland && eligible_.size() > 1) {
+            breaks_.clear();
+            for (int j : eligible_) {
+                const double delta = -s * alpha_[j];
+                breaks_.push_back({std::max(0.0, d_[j] * sign(delta) / std::fabs(delta)), j});
+            }
+            std::sort(breaks_.begin(), breaks_.end());
+            double slope = std::fabs(xp - target);
+            std::size_t stop = 0;
+            for (; stop < breaks_.size(); ++stop) {
+                const int j = breaks_[stop].second;
+                const double range = up_[j] - lo_[j];
+                if (!std::isfinite(range)) break;
+                const double drop = std::fabs(alpha_[j]) * range;
+                if (slope - drop <= 0) break;
+                slope -= drop;
+            }
+            if (stop > 0 && stop < breaks_.size() && std::fabs(alpha_[breaks_[stop].second]) >= 1e-7) {
+                q = breaks_[stop].second;
+                std::fill(work_.begin(), work_.end(), 0.0);
+                for (std::size_t b = 0; b < stop; ++b) {
+                    const int j = breaks_[b].second;
+                    const double before = x_[j];
+                    state_[j] = state_[j] == at_lower ? at_upper : at_lower;
+                    const double change = nonbasic_value(j) - before;
+                    x_[j] += change;
+                    if (j >= n_) work_[j - n_] -= change;
+                    else
+                        for (const auto& e : lp_.columns[j]) work_[e.row] += e.value * change;
+                }
+                factor_.ftran(work_, work2_);
+                for (int k = 0; k < m_; ++k)
+                    if (work2_[k] != 0) x_[head_[k]] -= work2_[k];
+                xp = x_[p];
+            }
+        }
         if (q < 0) {
             // No variable can repair row r: the dual is unbounded, so the primal is
             // infeasible. Confirm first: when row r of the inverse times the basis is the unit

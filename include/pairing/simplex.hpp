@@ -116,6 +116,7 @@ private:
     std::vector<double> rho_, work_, work2_;  // row r of B⁻¹; scratch for solves
     std::vector<int> cand_;                   // variables with a nonzero in the pivot row
     std::vector<int> eligible_;               // those that may enter
+    std::vector<std::pair<double, int>> breaks_;  // their ratios, for the bound-flipping test
     std::vector<char> in_cand_;
     std::vector<double> x_, d_, alpha_;
     int since_refactor_ = 0;
