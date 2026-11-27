@@ -839,9 +839,27 @@ LpBasis map_basis(const Model& from, const LpBasis& b, const Model& to) {
         out.state[j] = st;
         if (st == 0) basic_cols.push_back(j);
     }
+    // A new row takes as its basic variable a new continuous column in it, where there is
+    // one, rather than its own logical: a straddle class's running balance gains a row and
+    // a column for each new short, and with the logical basic instead the chain was cut,
+    // the duals above the cut changed, and on a 5,000-series book 1,705 columns came out
+    // dual infeasible (943 pivots to repair, against a handful).
+    std::vector<char> new_row(m1, 0);
+    for (int i = 0; i < m1; ++i) new_row[i] = !row.count(to.row_key[i]);
+    std::vector<char> paired(m1, 0);
+    for (int j = 0; j < n1; ++j) {
+        if (to.integer[j] || col.count(to.col_key[j]) || out.state[j] == 0) continue;
+        for (const auto& e : to.lp.columns[j])
+            if (new_row[e.row] && !paired[e.row]) {
+                paired[e.row] = 1;
+                out.state[j] = 0;
+                basic_cols.push_back(j);
+                break;
+            }
+    }
     for (int i = 0; i < m1; ++i) {
         auto it = row.find(to.row_key[i]);
-        signed char st = it != row.end() ? b.state[n0 + it->second] : 0;
+        signed char st = it != row.end() ? b.state[n0 + it->second] : (paired[i] ? 1 : 0);
         out.state[n1 + i] = st;
         if (st == 0) basic_logicals.push_back(n1 + i);
     }
