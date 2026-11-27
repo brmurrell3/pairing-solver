@@ -192,3 +192,37 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 1. A bound-flipping (long-step) dual ratio test, for the cold solve's root pivots.
 2. Hypersparse solves (skipping zeros by a symbolic reach) once etas and pivots dominate.
 3. A stronger formulation for `nearest_long`, whose LP bound is 2.5% below the optimum on the two hardest test cases.
+
+## Phase 7: second speed round and determinism (2026-11-27)
+
+**Targets** *(agent's choice, flagged; owner asked for another round)*: on the 1,000-series book, a full order solve (`what_if`) under **10 ms at p99**, `fits` under **0.5 ms**, a cold solve under **0.2 s**; every HiGHS comparison within 1%.
+
+**Profiling.** `sample` against `pairing` runs under the guard (no Xcode on this Mac, so no Instruments). The order path was btran 28%, the reduced-cost recompute at each solve's optimality check 13%, ftran 10%, the model build 10% (new series); the cold solve was half in the per-pivot passes over all n + m variables.
+
+**Done (commits after 1b50720):**
+- btran pushes each solved value forward through U by rows and skips zeros; reduced costs are kept between solves, and an optimality check after fewer than 8 pivots does not recompute the primal and dual values (unless a nonbasic variable sits at an artificial bound).
+- The ratio test and reduced-cost update run over the pivot row's nonzeros only.
+- A bound-flipping (long-step) dual ratio test, after a solve's first 20 pivots: the cold 1,000-series solve went from 6,306 to 790 pivots.
+- Model build 5.8 to 3.5 ms: integer payoffs, cached series keys, calls paired only with puts of their expiration and size, straddle partner checks in O(k).
+- Tried and reverted: a running-balance form of the straddle matching rows (fewer nonzeros, but 446 more rows; cold solve slower and new-series p99 142 ms), and refactoring every 24 or 40 updates instead of 64 (slower).
+
+**Measured (Mac, before it went onto battery and began throttling background work):**
+
+  | 1,000-series book | Start of Phase 7 | Now |
+  |---|---|---|
+  | Cold solve | 400 ms | 33 ms |
+  | Order, resize: median / p99 / max | 12.4 / 21.9 / 22.5 ms | 2.5 / 3.6 / 5.0 ms |
+  | Order, new series: median / p99 / max | 17.7 / 23.4 / 30.2 ms | 7.6 / 10.5 / 10.8 ms |
+  | Order, close: median / p99 / max | 10.9 / 24.0 / 25.2 ms | 3.4 / 15.5 / 20.4 ms |
+  | `bounds` / `fits` (resize, close): median | 0.70 ms | 0.51 ms |
+
+  The cold-solve and resize targets are met; the new-series p99 (10.5 ms, a model rebuild each), the close tail (1 order in 100 needs 145 warm pivots) and `fits` (0.51 ms) are just over theirs. `pairing_highs_tests 1000 40` and `large`: 0 failures, LP within 6e-16 of HiGHS, every answer within 1%.
+
+**Determinism (owner, 2026-11-27: "do anything we can to preserve determinism").** Measured first on the 1,000-series book: the same input solved twice gave the same answer; but listing the positions in another order moved the total by 0.002%, a warm `what_if` matched a cold solve of the same positions in 0 of 40 orders (totals up to 0.0074% apart, pairings different), and an exact solve (`rel_gap` 0) cannot prove optimality at this size within its node budget (5.5 s, stopped), so exactness is no route to path independence. Done:
+- `solve()` and `Book` work in canonical position order (`canonical()`), so the answer depends on the positions, not on how they are listed.
+- `Book::fill` re-solves cold, so a book's state, and every later `what_if`, is the same as a new `Book` on the same positions, whatever orders led there. Cost: a fill is a cold solve (about 35 ms at 1,000 series) instead of a warm one; fills are not on the pre-trade path.
+- `Book::canonical_what_if(order)` is opt-in full path independence: bit for bit `solve()` of the book after the order, at the cost of a cold solve (about 35 ms median at 1,000 series, against `what_if`'s 2.5 to 8 ms).
+- The `determinism` solver test checks all of it on 120 books, pairings included.
+- Not deterministic across platforms: the floating-point sums depend on the compiler and CPU, so Linux and the Mac may pick different near-optimal pairings.
+
+**Still to measure on mains power:** the 5,000-series book, and a full benchmark regeneration.
