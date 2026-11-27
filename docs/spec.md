@@ -11,7 +11,7 @@ the division, and the solver must report it leg by leg.
 
 For options margin the rulebook treats the division as the holder's choice. The
 Cboe Margin Manual allows positions to be margined separately to get the lowest
-requirement, and FINRA 4210(f)(2)(M) lets a customer designate which held position
+requirement, and FINRA 4210(f)(2)(M) lets the account holder designate which held position
 stands in for margin on an option (rules.md, R10). Brokers today mostly run greedy
 pairing heuristics, so the gap between greedy and optimal pairing is real money.
 See [sources.md](sources.md) for the evidence.
@@ -117,9 +117,9 @@ Proofs are still owed for the write-up.
 These facts keep each solve small:
 
 - **Decomposition:** subproblems are independent across accounts and across underlyings. Within an underlying, maximum-loss groups split further by exercise style and listing; stock structures tie options only to stock in the same underlying. A batch run is many small independent solves, one per (account, underlying).
-- **Size:** assumed, not yet measured, to be tens to a few hundred series per subproblem. Strategy-based margin applies to customer accounts; large professional books generally use portfolio margin or market-maker treatment. Phase 3 measures this.
+- **Size:** assumed, not yet measured, to be tens to a few hundred series per subproblem. Strategy-based margin applies to ordinary margin accounts; large professional books generally use portfolio margin or market-maker treatment. Phase 3 measures this.
 - **Shared rows:** every account holding the same underlying on the same day shares the strike set, prices and therefore the constraint coefficients and standalone costs. Only the bounds (holdings) differ, so a batch can reuse factorizations and warm-start from a similar account's solution.
-- **Small integers:** customer holdings per series are usually small whole numbers. That keeps branch-and-bound or dynamic programming over quantities cheap.
+- **Small integers:** holdings per series in such accounts are usually small whole numbers. That keeps branch-and-bound or dynamic programming over quantities cheap.
 
 ### 3.3 Policies
 
@@ -145,7 +145,7 @@ The project writes its own solver; it does not wrap a general-purpose one.
 2. **Structured algorithm:** a combinatorial method that uses the walk structure. The candidate is dynamic programming over strikes, with the running quantity `D` and the payoff level as state; for whole contracts it is exact. It is pseudo-polynomial, and no exact method is polynomial in the digits of the strikes unless P = NP (proofs.md, "Strike dynamic program" and "Hardness").
 3. **Reference only:** HiGHS is a test-time dependency, never shipped. It certifies optimal values for randomized differential tests against both of the above.
 
-The library is C++20 behind a small C interface (handle in, flat arrays in, results out, error codes). Java can call it through the Foreign Function & Memory API, and Python through ctypes.
+The library is C++20, to sit behind a small C interface (handle in, flat arrays in, results out, error codes) so that Java can call it through the Foreign Function & Memory API, and Python through ctypes. The C interface is not built yet (plan.md, Release v1.2.0); today the C++ headers in `include/pairing/` are the interface.
 
 ### 3.5 Out of scope for version 1
 

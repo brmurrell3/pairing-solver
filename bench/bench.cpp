@@ -155,9 +155,9 @@ void timing_table(const RuleSet& r) {
                  "the solver's own bound.\n\n"
               << "| Series | Books | Model rows x cols (median) | Time: median | p90 | max | Nodes (median) | Stopped at budget | "
                  "Proven gap (max) |\n|---|---|---|---|---|---|---|---|---|\n";
-    const int sizes[] = {10, 30, 100, 300, 1000};
-    const int counts[] = {50, 50, 20, 10, 1};  // one 1,000-series book takes minutes
-    for (int z = 0; z < 5; ++z) {
+    const int sizes[] = {10, 30, 100, 300, 1000, 5000};
+    const int counts[] = {50, 50, 20, 10, 1, 1};
+    for (int z = 0; z < 6; ++z) {
         std::mt19937_64 rng(5'000 + sizes[z]);
         Stats t, nodes, rows, cols, gap;
         int stopped = 0;
@@ -192,13 +192,13 @@ void orders_table(const RuleSet& r) {
                  "nodes). Each order is priced from the book's optimum with `Book::what_if`. A resize adds or removes 1 to 10 "
                  "contracts of a held series without closing it; a new series is a series the book does not hold; a close "
                  "sells or buys back a whole position. Against cold is the order's total less a cold `solve()` of the book "
-                 "after the order, relative to it, over the first 20 orders of each kind. Bounds is `Book::bounds`, "
+                 "after the order, relative to it, over the first 20 orders of each kind (10 at 5,000 series). Bounds is `Book::bounds`, "
                  "a lower bound from the warm continuous relaxation and an upper bound from the book's pairing carried "
                  "over; its band is (upper - lower) / upper.\n\n"
               << "| Series | Book solve | Order | Orders | Median | p90 | p99 | Max | Against cold: mean | min | max | "
                  "Bounds: median | max | band median | band p90 |\n"
                  "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
-    for (int n : {100, 300, 1000}) {
+    for (int n : {100, 300, 1000, 5000}) {
         std::mt19937_64 rng(5'000 + n);  // the timing table's first book of this size
         Portfolio p = books::market_maker(rng, n);
         SolveOptions o;
@@ -207,7 +207,9 @@ void orders_table(const RuleSet& r) {
         Book book(p, r, o);
         const double book_s = seconds_since(t0);
         std::mt19937_64 orders(9'000 + n);
-        const int count[] = {200, n == 1000 ? 20 : 50, n == 1000 ? 20 : 50};
+        const int few = n == 5000 ? 30 : n == 1000 ? 20 : 50;
+        const int count[] = {n == 5000 ? 30 : 200, few, few};
+        const int cold_count = n == 5000 ? 10 : 20;  // a cold 5,000-series solve takes about 2 s
         const char* names[] = {"resize", "new series", "close"};
         for (int kind = 0; kind < 3; ++kind) {
             Stats t, diff, bt, band;
@@ -237,7 +239,7 @@ void orders_table(const RuleSet& r) {
                 const Book::OrderBounds b = book.bounds(order);
                 bt.add(seconds_since(t0));
                 band.add((dollars(b.upper) - b.lower) / dollars(b.upper));
-                if (k < 20) {
+                if (k < cold_count) {
                     const double cold = dollars(solve(after, r, o).total);
                     diff.add((dollars(w.total) - cold) / cold);
                 }

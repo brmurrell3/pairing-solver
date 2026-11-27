@@ -4,9 +4,11 @@ Plan Phase 4 asks for written proofs of spec §3.1 items 1, 2, 4 and 5. They are
 with items 3 and 6, which the others lean on. The rule references are to
 [rules.md](rules.md). `tools/check_structure.py` and the `unit` test check items 1, 4 and 5
 numerically. The sections after item 6 are the other Phase 4 results: integrality, compact
-straddles, the strike dynamic program, and hardness (Theorems 1 to 4 and Proposition 5),
-which `tools/check_hardness.py` checks by exhaustive search on small instances. Theorems 1
-to 4 are also proved in Lean 4 (`lean/`).
+straddles, the strike dynamic program, and hardness (Theorems 1 to 4, Propositions 5 and
+7, Corollary 6), which `tools/check_hardness.py` and `tools/check_approx_expiry.py` check
+by exhaustive search on small instances. Theorems 1 to 4, and the gap lemmas behind
+Corollary 6, are also proved in Lean 4 (`lean/`). The hardness results have not been
+independently reviewed, and their novelty is not established ("Hardness", Status).
 
 ## Setting
 
@@ -953,8 +955,8 @@ The Corollary 6 checks run with and without the lesser-of clause.
 It also checks both examples above and that the named spreads' requirements match the
 legacy figures and two uneven butterflies from the Cboe manual (pp. 37 and 54).
 
-`lean/` proves Theorems 1 to 4, and the gap form of Theorems 1 and 2 used by Corollary 6, in Lean 4 with Mathlib (`lake build` in that folder; see
-its README for the statements). For every instance of numerical 3-dimensional matching it
+`lean/` proves Theorems 1 to 4, and the gap form of Theorems 1 and 2 used by Corollary 6,
+in Lean 4 with Mathlib (`lake build` in that folder; see its README for the statements). For every instance of numerical 3-dimensional matching it
 proves that the butterfly instance has a zero pairing into named spreads exactly when a
 matching exists (`N3DM.theorem1`), the same for spreads of at most three or four legs
 priced by their maximum loss on the butterfly and condor instances (`N3DM.theorem2_three`,

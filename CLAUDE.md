@@ -41,7 +41,7 @@ whole units, a fixed decimal step, or continuous. Margin is its first applicatio
 - **Plan status:** keep `docs/plan.md` current. When a phase or input item is finished, mark it done with the date and the evidence (test counts, commands).
 - **Clean room:** use only public rule texts and published papers. Never use employer code, documents or data.
 - **Licenses:** never commit `refs/` (the Cboe manual's license forbids redistribution) or `data/private/`. Numbers transcribed from the manual into fixtures are fine; its prose is not.
-- **Git:** this is the owner's private repository with no other contributors, so agents may commit freely (owner, 2026-11-25). Never put Claude or any AI tool in commit messages or as a co-author. Do not push to a remote or open pull requests on repositories the owner does not own.
+- **Git:** this is the owner's public repository (https://github.com/brmurrell3/pairing-solver, public since 2026-11-26) with no other contributors, so agents may commit and push to `main` freely (owner, 2026-11-25). Never put Claude or any AI tool in commit messages or as a co-author. Do not push to a remote or open pull requests on repositories the owner does not own.
 - **Docs style:** plain, precise prose with real numbers and commands. Comment the why, not the what.
 
 ## Tools
@@ -86,7 +86,7 @@ ctest --test-dir build --output-on-failure
 - **`cboe_manual`, `cboe_manual_samples`:** every case in the two fixture files. `build/pairing_tests fixture <file.toml>` runs one file.
 - **`solver`:** the simplex and branch-and-bound on small LPs and knapsacks, hand-built portfolios (including the long box), the greedy baseline, the strike dynamic program against the exact solve, and the subset-sum reduction of proofs.md Theorem 4.
 - **`exhaustive`:** the solver against brute force on 3,000 small portfolios, exact (`rel_gap = 0`).
-- **`highs`, `highs_large`:** the Phase 2 criteria against HiGHS (about 3 and 6 minutes). `pairing_highs_tests <n> [max series] [rel_gap]` and `pairing_highs_tests large [rel_gap] [case]` run them by hand.
+- **`highs`, `highs_large`:** the Phase 2 criteria against HiGHS (about 30 s each on the M3 Max, most of it in HiGHS). `pairing_highs_tests <n> [max series] [rel_gap]` and `pairing_highs_tests large [rel_gap] [case]` run them by hand.
 - **Sanitizers:** `cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined -O1"`, then build and run `ctest --test-dir build-asan -E highs` under the guard with `-m 8192`. ASan needs the higher memory cap.
-- **Benchmarks:** `tools/run_guarded.sh -m 4096 -t 3000 -- build/pairing_bench > docs/benchmarks.md` regenerates every Phase 3 table (about 8 minutes); `pairing_bench <table>` runs one.
+- **Benchmarks:** `tools/run_guarded.sh -m 6144 -t 3000 -- build/pairing_bench > docs/benchmarks.md` regenerates every table (about 3 minutes); `pairing_bench <table>` runs one.
 - `tools/check_fixtures.py` reads spread cases only, so it runs on `cboe_manual.toml` but not on `cboe_manual_samples.toml`.

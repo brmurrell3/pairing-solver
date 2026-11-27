@@ -1,6 +1,6 @@
 # Plan
 
-**Current status (2026-11-26):** Phases 0 to 3 done. Phase 4: the proofs, the integrality counterexamples, the dynamic program and the hardness results are written (proofs.md); what is still open is listed under Phase 4. Phase 5: the code is public. Phase 6 (pre-trade speed) done 2026-11-26: every order on a 1,000-series book in under 50 ms on the Mac.
+**Current status (2026-11-27):** Phases 0 to 3 done. Phase 4: the proofs, the integrality counterexamples, the dynamic program and the hardness results are written (proofs.md); what is still open is listed under Phase 4. Phase 5: the code is public, latest release v1.2.0. Phases 6 to 8 (pre-trade speed and determinism) done 2026-11-27: on the Mac, every order on a 1,000-series book prices in under 12 ms and the book solves cold in 29 ms; at 5,000 series orders take 25 to 53 ms median and the cold solve 2.0 s. Not built: the C interface of the language decision below (spec §3.4).
 
 ## Decisions
 
@@ -160,7 +160,7 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 
 ## Phase 5: publish
 
-- **Code:** a public repository with the clean-room note, after checking the employer's outside-activity and IP policy. Done 2026-11-26: https://github.com/brmurrell3/pairing-solver, releases v1.0.0 and v1.1.0 (Phase 6 speed, `Book`, hardness results). CI (`.github/workflows/ci.yml`) builds and runs the five non-HiGHS tests and both Python checks on Ubuntu 24.04 (GCC) and macOS (Clang); first run green in under a minute per job. Assumptions: "published version" is a tagged GitHub release with no package registry (owner, 2026-11-26); CI skips the HiGHS tests (about 9 minutes) because HiGHS is not installed there, so they stay a local gate.
+- **Code:** a public repository with the clean-room note, after checking the employer's outside-activity and IP policy. Done 2026-11-26: https://github.com/brmurrell3/pairing-solver, releases v1.0.0, v1.1.0 (Phase 6 speed, `Book`, hardness results) and v1.2.0 (Phases 7 and 8, determinism, Corollary 6 and Proposition 7; see the end of this file). CI (`.github/workflows/ci.yml`) builds and runs the five non-HiGHS tests and the Python checks on Ubuntu 24.04 (GCC) and macOS (Clang); first run green in under a minute per job. Assumptions: "published version" is a tagged GitHub release with no package registry (owner, 2026-11-26); CI skips the HiGHS tests (about 9 minutes then, about a minute since Phase 7) because HiGHS is not installed there, so they stay a local gate.
 - **Write-up:** a project page on brendanmurrell.com covering the formulation, the proofs and the benchmark results.
 - **Resume:** a project line on the resume.
 
@@ -265,3 +265,15 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
   | `bounds` / `fits` | 1.6–1.9 ms | 2.2 ms |
 
   Against a cold solve of the same positions, `what_if` totals are at most 0.047% above at 5,000 series (mean 0.008% or less) and 0.005% at 1,000. The 1,000-series times are unchanged. The cold solve (2.0 s at 5,000) is untouched.
+
+## Release v1.2.0 (2026-11-27)
+
+A cleanup pass before tagging, at the owner's request ("just looking for the latest to be clean").
+
+- *Benchmarks:* `pairing_bench` now includes a 5,000-series book in "Solve time by size" (one book) and "Pre-trade check" (30 orders of each kind, the first 10 compared against a cold solve, since each takes about 2 s); sizes and counts are the agent's choice. docs/benchmarks.md was regenerated in full, about 3 minutes, with the Mac on battery. 1,000 series: cold 29 ms, order medians 2.6 to 7.3 ms, p99 7.6 to 11.9 ms. 5,000 series: cold 2.0 s, order medians 25 to 53 ms, p99 75 ms (resize, new series) and 103 ms (close; with 30 orders the p99 is the maximum, against 99 ms in Phase 8's run). Orders are at most 0.141% above a cold solve.
+- *Evidence:* `ctest` 7 of 7 with HiGHS (`highs` 32 s, `highs_large` 35 s); `pairing_highs_tests 1000 40`: 0 failures, at most 0.991% above HiGHS, ours 4.0 s against HiGHS's 28 s; `large`: 0 failures, at most 0.69% above. `ctest -E highs` under AddressSanitizer and UndefinedBehaviorSanitizer: 5 of 5. A fresh Release build has no compiler warnings (the only linker warning is Homebrew's HiGHS dylib targeting a newer macOS).
+- *CI:* also runs `tools/check_hardness.py --quick` (1 s) and `tools/check_approx_expiry.py` in full (15 s).
+- *Docs:* README results show 1,000 and 5,000 positions and keep the "not independently reviewed, novelty not established" caveat; proofs.md's opening lists Corollary 6 and Proposition 7. Where spec.md and rules.md paraphrased FINRA's "customer", they now say "account holder" or "ordinary margin accounts" (owner's wording preference); the rule references are unchanged.
+- *Not built, found in the pass:* spec §3.4 described the C interface as if it existed; it does not, so the spec now says so. Building it is open.
+- *Housekeeping:* the merged `hardness-proofs` branch is deleted; CLAUDE.md says the repository is public; the CMake project version is 1.2.0.
+

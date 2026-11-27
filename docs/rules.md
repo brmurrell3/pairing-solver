@@ -66,7 +66,7 @@ before relying on any number.
 
 ## Choosing the pairing
 
-- **R10. The pairing is the holder's choice.** The Cboe manual lets positions be margined separately to get the lowest requirement (Initial and Maintenance Requirements, opening paragraph). FINRA (f)(2)(M) lets a customer designate which held position stands in for margin on an option. No text found prescribes a pairing method.
+- **R10. The pairing is the holder's choice.** The Cboe manual lets positions be margined separately to get the lowest requirement (Initial and Maintenance Requirements, opening paragraph). FINRA (f)(2)(M) lets the account holder designate which held position stands in for margin on an option. No text found prescribes a pairing method.
 
 ## Open questions
 
