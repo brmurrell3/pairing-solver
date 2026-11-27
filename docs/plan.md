@@ -225,4 +225,8 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 - The `determinism` solver test checks all of it on 120 books, pairings included.
 - Not deterministic across platforms: the floating-point sums depend on the compiler and CPU, so Linux and the Mac may pick different near-optimal pairings.
 
-**Still to measure on mains power:** the 5,000-series book, and a full benchmark regeneration.
+**Benchmarks regenerated (2026-11-27):** docs/benchmarks.md, all tables, in about 2 minutes. 1,000-series book: cold 29 ms; per order, p99 7.3 ms (resize), 12.2 ms (new series), 12.0 ms (close), from 200, 20 and 20 orders.
+
+**Scaling to 5,000 series (2026-11-27), the same generator:** model 4,817 x 10,313; cold solve 1.73 s; `what_if` median 223 ms (resize), 291 ms (new series), 227 ms (close, max 1.25 s); `bounds` 8.6 ms, 78 ms for a new series. Ten times the 1,000-series cost per series, because the loss rows make the model dense: each member has a nonzero on every strike where it pays, so the basis holds 937,000 nonzeros at 5,000 series against 63,000 at 1,000 (the LU nucleus stays tiny, 7 columns). ftran over that factor is 52% of an order's time.
+
+**Next:** write each group's loss rows as the strike walk's recursion (spec §3.1 item 1): with put balance the payoff's slope between strikes is the running unit count, so P(K_{k+1}) = P(K_k) + ΔK·D_k and D_k = D_{k-1} + (units at strike K_k). Each member then sits in one D row instead of one loss row per strike, and the nonzeros grow with the series, not series × strikes. It adds two bounded columns and two rows per strike, and touches the Book's bound updates and keys.
