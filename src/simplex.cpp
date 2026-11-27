@@ -616,21 +616,22 @@ LpSolution DualSimplex::solve(const LpBasis& start) {
             }
         }
         for (int j : cand_) in_cand_[j] = 1;
+        // The first pass keeps the eligible variables, usually far fewer than cand_, for the
+        // second.
         double theta_max = lp_infinity;
+        eligible_.clear();
         for (int j : cand_) {
             if (state_[j] == basic || lo_[j] == up_[j]) continue;
-            double delta = -s * alpha_[j];
-            bool eligible = state_[j] == at_lower ? delta > pivot_tol : delta < -pivot_tol;
-            if (eligible && !bland) theta_max = std::min(theta_max, (d_[j] * sign(delta) + dual_tol) / std::fabs(delta));
+            const double delta = -s * alpha_[j];
+            if (!(state_[j] == at_lower ? delta > pivot_tol : delta < -pivot_tol)) continue;
+            eligible_.push_back(j);
+            if (!bland) theta_max = std::min(theta_max, (d_[j] * sign(delta) + dual_tol) / std::fabs(delta));
         }
         int q = -1;
         double q_key = 0;
-        for (int j : cand_) {
-            if (state_[j] == basic || lo_[j] == up_[j]) continue;
-            double delta = -s * alpha_[j];
-            bool eligible = state_[j] == at_lower ? delta > pivot_tol : delta < -pivot_tol;
-            if (!eligible) continue;
-            double ratio = d_[j] * sign(delta) / std::fabs(delta);
+        for (int j : eligible_) {
+            const double delta = -s * alpha_[j];
+            const double ratio = d_[j] * sign(delta) / std::fabs(delta);
             if (bland) {
                 if (q < 0 || ratio < q_key - 1e-12) {
                     q = j;

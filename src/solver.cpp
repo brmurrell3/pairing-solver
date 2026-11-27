@@ -73,7 +73,12 @@ struct Builder {
     OptionLeg leg(int i, std::int64_t q) const { return lot_leg(p.options[i], q, lots); }
     StockLeg shares(std::int64_t q) const { return StockLeg{p.stock.shares < 0 ? -q : q, p.stock.price}; }
     int cap_index(int position) const { return position == stock_position ? n : position; }
+    std::vector<std::int64_t> series_key;  // per position, filled by capacities()
     std::int64_t series(int position) const {
+        if (position >= 0 && position < static_cast<int>(series_key.size())) return series_key[position];
+        return series_hash(position);
+    }
+    std::int64_t series_hash(int position) const {
         if (position == stock_position || position == n) return static_cast<std::int64_t>(Key{} << 'T');
         const Option& o = p.options[position].option;
         Key k;
@@ -106,6 +111,7 @@ struct Builder {
             unit.push_back(separate({leg(i, 1)}, p.market, r).total());
         }
         cap.push_back(std::llabs(p.stock.shares));
+        for (int i = 0; i < n; ++i) series_key.push_back(series_hash(i));
         unit.push_back(has_stock ? stock(shares(1), r).total() : Money{});
         for (int i = 0; i <= n; ++i) {
             if (i == n && !has_stock) {
@@ -399,20 +405,30 @@ struct Builder {
         if (!short_seen || !long_seen) return;
         const int h = m.groups++;
 
-        std::set<Money> strike_set;
-        for (int i : candidates) strike_set.insert(p.options[i].option.strike);
-        std::vector<Money> strikes(strike_set.begin(), strike_set.end());
+        std::vector<Money> strikes;
+        for (int i : candidates) strikes.push_back(p.options[i].option.strike);
+        std::sort(strikes.begin(), strikes.end());
+        strikes.erase(std::unique(strikes.begin(), strikes.end()), strikes.end());
 
-        // Netted value of one lot at each strike, from Phase 1.
-        std::map<int, std::vector<double>> value;
+        // Netted value of one lot at each strike: Phase 1's payoff_at, (strike distance)+ ×
+        // units, done here in exact integer micro-dollars when that cannot overflow (one call
+        // per lot and strike was most of a 1,000-series model build).
+        std::vector<std::vector<double>> value(candidates.size());
         double t_up = 0;  // the shorts' loss alone bounds the group's
         std::vector<double> loss_up(strikes.size(), 0);
-        for (int i : candidates) {
-            auto& v = value[i];
+        for (std::size_t c = 0; c < candidates.size(); ++c) {
+            const int i = candidates[c];
+            auto& v = value[c];
+            v.reserve(strikes.size());
             double worst = 0, best = 0;
             const std::vector<OptionLeg> one = {leg(i, 1)};
+            const bool call = one[0].option.type == OptionType::call;
+            const std::int64_t s = one[0].option.strike.micros(), u = one[0].units();
             for (Money k : strikes) {
-                v.push_back(dollars(payoff_at(one, k)));
+                const std::int64_t d = call ? k.micros() - s : s - k.micros();
+                std::int64_t micros = 0;
+                if (d > 0 && __builtin_mul_overflow(d, u, &micros)) micros = payoff_at(one, k).micros();
+                v.push_back(static_cast<double>(micros) / Money::per_dollar);
                 worst = std::min(worst, v.back());
                 best = std::max(best, v.back());
             }
@@ -451,13 +467,14 @@ struct Builder {
                     tr.suffix.push_back({*it, row(0, long_units, Key{} << 'U' << g << static_cast<int>(t) << it->year << it->month << it->day)});
         }
 
-        for (int i : candidates) {
+        for (std::size_t c = 0; c < candidates.size(); ++c) {
+            const int i = candidates[c];
             const OptionLeg& o = p.options[i];
             OptionLeg one = leg(i, 1);
             double units = static_cast<double>(one.units());
             std::vector<Lp::Entry> e = {{m.capacity_row[i], 1.0}};
             for (std::size_t k = 0; k < strikes.size(); ++k)
-                if (value[i][k] != 0) e.push_back({loss_row[k], value[i][k]});
+                if (value[c][k] != 0) e.push_back({loss_row[k], value[c][k]});
             const TypeRows& tr = rows[o.option.type];
             e.push_back({tr.balance, units});
             for (auto [d, row] : tr.suffix)
