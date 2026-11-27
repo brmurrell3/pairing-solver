@@ -344,7 +344,8 @@ is checked by exhaustive search on small instances ("Checks" below), which tests
 constructions and cannot prove them. The correctness and size of the reductions of
 Theorems 1 to 4 are machine-checked in Lean 4 ([lean/](../lean/README.md)); the
 NP-completeness of the source problems is cited there, not proved. Proposition 5 is not
-formalized.
+formalized. Corollary 6 and Proposition 7 were added on 2026-11-27; of them only the gap
+lemmas behind Corollary 6 are machine-checked, and both are checked by exhaustive search.
 
 **Questions.**
 (a) Matsypura and Timkovsky write that "the complexity status of the problem with offsets
@@ -361,6 +362,8 @@ margin NP-hard once butterflies and condors count as offsets?
 | The same, with butterflies and condors only on adjacent strikes of one evenly spaced grid | Solvable in time polynomial in the grid length and the contracts held, so not NP-hard in the strong sense unless P = NP (Proposition 5) | none |
 | Spreads of at most three legs, or at most four, priced at their maximum loss (today's rule with a leg limit) | NP-hard in the strong sense (Theorem 2) | numerical 3-dimensional matching |
 | Any balanced set, priced at its maximum loss (today's rule and the solver's model, question (b)) | NP-hard; with one expiration only in the weak sense (Theorems 3 and 4) | subset sum |
+| The same with several expirations, when the strikes or the expirations are few in number | Polynomial in the contracts held and the strike range (Proposition 7) | none |
+| Approximating the first three rows, long premiums included | No factor `1 + ρ` for any polynomial `ρ`, in the strong sense (Corollary 6) | numerical 3-dimensional matching |
 
 Every hard instance below uses calls of one expiration and one deliverable, in whole
 contracts. With continuous quantities the solver's problem is a linear program (spec §2),
@@ -521,8 +524,8 @@ bear spreads against 174 and 176 or to their uncovered requirement.
 
 **Not approximable.** The theorem separates a minimum of zero from a positive one. So,
 unless P = NP, no polynomial algorithm guarantees any fixed multiple of the minimum
-requirement net of long premiums. With the premiums added, which are the same for every
-pairing, this says nothing.
+requirement net of long premiums. Corollary 6 carries this to the total with the premiums
+added, on instances priced with small premiums.
 
 ### Theorem 2: a leg limit under the maximum-loss rule
 
@@ -661,7 +664,8 @@ that sum to `(n + 1)T + n`. Take `2 ≤ k ≤ n` and `T ≤ Σ`, where `Σ = Σa
 are answered by inspection.
 
 **Theorem 4.** The one-group problem stays NP-hard when the market data are call prices
-free of arbitrage and every uncovered requirement is computed by R3 at stock rates.
+within the no-arbitrage bounds and every uncovered requirement is computed by R3 at stock
+rates.
 
 **Reduction.** Let `shift = 8Σ`, `v_i = a_i + shift`, `V = T + k·shift`, `β = 1/(2k)` and
 `π = 1`. Set the underlying at `S = 2(π + βV)`, pick `K_low ≥ 1.1 S`, and let
@@ -677,7 +681,12 @@ and the bound is `R = Σ_i U_i − (c·k + βV)`, with `c = π + S/10`. Then:
 - *Strikes.* `K_low < K_i < K_top`, since `k ≥ 2` and `shift > a_i` give `v_i < V`.
 - *Prices.* `C` is linear and falls by `β < 1` per point of strike. `C(K_top) = π > 0` and
   `C(K_low) = S/2 < S`. Every strike is above `S`, so the lower bound `S − K` is negative.
-  The prices are decreasing, convex and within the no-arbitrage bounds.
+  So the prices are positive, at most the underlying, at least intrinsic value, and
+  falling at a rate below one: the no-arbitrage bounds. They are convex but not strictly
+  convex. Being linear, they price a butterfly inside the range at zero although it pays
+  off between its wings, which is a weak arbitrage (corrected 2026-11-27; this section
+  used to call the prices free of arbitrage). Whether the reduction survives strictly
+  convex prices is not checked; Corollary 6's instances use strictly convex ones.
 - *R3.* Every strike is at least 10% out of the money, so 20% of the underlying less the
   out-of-the-money amount is at most the 10% floor, and `U_i = C(K_i) + S/10 = c + β v_i`.
 - *(I1)* `shift > Σ`.
@@ -745,6 +754,122 @@ quantities is open. The same walk should handle puts and the two-sided main spre
 consecutive strikes, which add counts of the same kind; that is not written out or
 checked.
 
+### Corollary 6: no approximation within any factor, premiums included
+
+Theorem 1 says nothing about approximation once the long premiums are added, if the
+premiums are large. On instances priced with small premiums it says a great deal.
+
+**Corollary 6.** Unless P = NP, for every polynomial `ρ(n, W)` no polynomial algorithm
+finds, for every position, a pairing whose total requirement, long premiums included, is
+less than `1 + ρ` times the least, under the named spreads of Theorem 1 or a leg limit of
+three or four (Theorem 2). This holds with every uncovered requirement computed by R3 at
+stock rates, with call premiums that are positive, falling and strictly convex in the
+strike, with or without the lesser-of clause, and in the strong sense. Net of the long
+premiums, no factor at all can be guaranteed.
+
+**Proof.** *The gap.* Let `μ > 0` be at most every positive requirement that a spread or
+an uncovered short can have on the instance. A pairing's requirement net of premiums is a
+sum of such terms, so it is either zero or at least `μ`. By Theorems 1 and 2 it is zero for
+some pairing exactly when the source instance has a matching. So the least total is `L`,
+the long premiums, when there is a matching, and at least `L + μ` when there is none. An
+algorithm within `1 + ρ` of the least, run on an instance with `μ ≥ ρL`, therefore decides
+the matching: its answer is below `(1 + ρ)L` exactly on yes-instances. For the trivial
+no-instance of Theorem 2 (one uncovered short), `L = 0` and every answer is positive.
+
+*The bound `μ`.* Write `u` for the smaller positive requirement a spread can have:
+
+- On the butterfly instance under the named spreads, every short is at a `y` strike and
+  no long lies between two `y` strikes, so the only credit spreads that can be formed are
+  bear call spreads from a short at `y ≤ M + W − 1` to a long at `z ≥ 2M + 2`. Their width
+  is at least `u = M − W + 3`, and they require their width, or the lesser of it and the
+  uncovered requirement.
+- Under a leg limit, strikes and contracts are whole, so a positive maximum loss is at
+  least `u = 1`.
+
+*Prices.* Put the underlying at `S = 10u` and add `S` to every strike, so every call is
+out of the money. Price the call at strike `K` at
+`C(K) = π (1 + ((K_top − K)/(K_top − K_bottom))²)`: positive, falling, strictly convex
+(so no vertical or butterfly is free), at most `2π`, never above `S`, and above intrinsic
+value, which is zero. R3 charges every uncovered short at least 10% of the underlying,
+`S/10 = u`. So `μ = u`. The position holds `2n` long contracts, so `L ≤ 4nπ`, and
+`π = u/(4nρ)` gives `μ ≥ ρL`.
+
+Every number is polynomial in `n`, `W` and `ρ`: strikes at most `10u + (2n + 3)M + W`, and
+premiums that are whole multiples of `π / (K_top − K_bottom)²`. So for polynomial `ρ` the
+instances stay in the strong sense. ∎
+
+With numbers of polynomially many digits, the same argument rules out a factor
+`2^{poly(n)}`, in the weak sense. The prices obey R3, are within the no-arbitrage bounds
+and are strictly convex, so no vertical or butterfly is free, but they are not a realistic
+chain: every strike is out of the money and every premium is
+tiny. The gap lemma (zero or at least `μ`) is machine-checked for Theorems 1 and 2
+(`N3DM.theorem1_gap`, `theorem2_three_gap`, `theorem2_four_gap`); the pricing step is
+not, and `tools/check_approx_expiry.py` checks the whole corollary on small instances.
+
+### Proposition 7: one group with several expirations
+
+Theorems 3 and 4 and the strike dynamic program have one expiration. Under the pairwise
+rule (R2a, item 4) a group may span several, and each adds one suffix inequality per type.
+
+**Setting.** One maximum-loss group: options of one style, listing and deliverable, calls
+and puts, `m` strikes, `E` expirations, `N` contracts held, no stock and no straddles. A
+group takes whole contracts of each series, between zero and the holding. It balances
+within calls and within puts, and for each type and expiration `d` the shorts expiring on
+or after `d` are at most the longs expiring on or after `d` (item 4). It costs its maximum
+loss plus `U` for every short left out (and, for a long beyond nine months, its lost loan
+value, a nonnegative cost per contract).
+
+**Proposition 7.** The one-group minimum can be found
+
+1. in time polynomial in `N`, `m` and the strike range over the tick when `E` is fixed, and
+2. in time polynomial in `N` and the input size when `m` is fixed: `(N + 1)^{2m}` minimum-cost
+   flows.
+
+So it is not NP-hard in the strong sense when either the strikes or the expirations are
+bounded in number, unless P = NP.
+
+**Proof.** *Fixed `E`.* Run the strike dynamic program with one more piece of state: the net
+contracts chosen so far of each type at each expiration, `2E` numbers in `[−N, N]`. The
+walk's `X` and `Y` depend only on the totals over expirations, which these numbers give,
+so its transitions are unchanged. At the last strike, keep the states whose numbers pass
+the suffix inequalities and balance. A layer has at most `(2N + 1)^{2E}` such keys for each
+`(X, Y)` pair, and the `(X, Y)` pairs are bounded as in "Strike dynamic program".
+
+*Fixed `m`.* Write `y_{t,K}` for the group's net contracts of type `t` at strike `K`,
+summed over expirations. The payoff at every strike, and so the maximum loss, depends only
+on the `y`. Fix them. What is left is to choose the contracts of each series, with the given
+sums over expirations at each strike and item 4's inequalities, to save the most. For each
+type this is a minimum-cost flow on one node per strike and one per expiration:
+
+- a long series at `(K, e)`: an arc from `e` to `K` with capacity its holding and cost its
+  per-contract cost (zero within nine months);
+- a short series at `(K, e)`: an arc from `K` to `e` with capacity its holding and cost
+  `−U`;
+- for each `e` but the last, an arc from `e` to the next expiration with unbounded
+  capacity and cost zero;
+- each strike node `K` takes in `y_{t,K}`, and each expiration node balances.
+
+Write `W_e` for the flow on the arc into `e` and `Z_e` for the net contracts chosen at
+expiration `e`. Conservation at `e` gives `W_e = W_{e+1} + Z_e`, with no arc into the first
+expiration or out of the last, so `W_e = Σ_{e' ≥ e} Z_{e'}`, and `W_e ≥ 0` is item 4's
+inequality at `e`; at the first expiration it is balance. So the flows are exactly the
+groups with these strike totals. The data are whole, so an optimal flow is whole, which
+gives whole contracts. Each `y_{t,K}` lies between minus the shorts and the longs held at
+`K`, so there are at most `(N + 1)^{2m}` choices, each priced by two flows and one
+evaluation of the payoff. ∎
+
+**What it leaves open.** Whether the problem is NP-hard in the strong sense when both `m`
+and `E` grow. The proof locates where any hardness must sit: for fixed strike totals the
+problem is a network flow, so all of it is in choosing the `y`. One attempt that does not
+work: a reduction from 3-partition with one strike region per bin and one expiration per
+item. The suffix inequalities do bound how often each item is used, but a bull spread from a
+long in one region to a short in a later one has no loss, so the regions do not separate
+and every assignment of items to bins reaches zero.
+
+`tools/check_approx_expiry.py` compares part 1 (the strike walk with per-expiration counts),
+part 2 (the flows), and a third program that walks the expirations carrying the payoff at
+every strike, with exhaustive search.
+
 ### What the results say
 
 - **Limits on the shape of a spread are what make pairing hard in the strong sense.** With
@@ -772,11 +897,17 @@ checked.
     a maximum flow (Matsypura and Timkovsky 04/2010, Theorem 6 with Section 6).
   - A fixed number of series, whatever the quantities, under the named-spread rule or the
     one-group rule: integer programming with a fixed number of variables (Lenstra 1983).
+  - One group with several expirations, when the number of strikes or the number of
+    expirations is fixed: polynomial in the contracts held, the strike range and the input
+    size (Proposition 7). With the strikes fixed, by `(N + 1)^{2m}` minimum-cost flows.
 - **Not settled here.**
   - Whether the adjacent-strike reading of Proposition 5 is polynomial in the digits of
     the quantities.
-  - Whether the one-group problem with several expirations or deliverables is NP-hard in
-    the strong sense. The dynamic program covers one of each.
+  - Whether the one-group problem with several expirations is NP-hard in the strong sense
+    when the numbers of strikes and of expirations both grow. Proposition 7 covers either
+    one fixed.
+  - The same with several deliverables. The strike walk in share-equivalents looks
+    pseudo-polynomial in the deliverables, but that is not written out or checked.
   - Leg limits of five or more.
   - How these results sit beside Chen and Li's. Their conference abstract (2015) reports an
     integer margin model, "based on the strategy-based approach and vector model", that is
@@ -807,10 +938,22 @@ instances are not planted, so that sizes above the bound occur.
 | Theorem 4, shorts priced by R3 (3 to 8 numbers) | 897 yes, 603 no | all |
 | Proposition 5: the dynamic program against the search over every pairing (3 to 8 grid points, up to 3 contracts a strike) | 600 | all |
 
+`python3 tools/check_approx_expiry.py` (about 15 seconds; `--quick` under a second) checks
+Corollary 6 and Proposition 7 the same way, with seed 20261127:
+
+| Check | Instances | Agree |
+|---|---|---|
+| Corollary 6, `ρ = 100`: total equals the premiums with a matching, at least `101` times them without, under named spreads (`n` = 2 to 4) | 123 yes, 97 no | all |
+| The same under at most 3 and at most 4 legs | 123 yes, 71 no each | all |
+| The same with `ρ = 10⁶` (`n` = 2) | 18 yes, 12 no; 18 yes, 7 no each | all |
+| Proposition 7: the strike walk with per-expiration counts, the flows over strike totals, and a walk over the expirations, against exhaustive search (2 to 5 strikes, 1 to 4 expirations, calls and puts, up to 3 contracts a series) | 3,000 books, 219 where the expiration rule changes the minimum | all |
+
+The Corollary 6 checks run with and without the lesser-of clause.
+
 It also checks both examples above and that the named spreads' requirements match the
 legacy figures and two uneven butterflies from the Cboe manual (pp. 37 and 54).
 
-`lean/` proves Theorems 1 to 4 in Lean 4 with Mathlib (`lake build` in that folder; see
+`lean/` proves Theorems 1 to 4, and the gap form of Theorems 1 and 2 used by Corollary 6, in Lean 4 with Mathlib (`lake build` in that folder; see
 its README for the statements). For every instance of numerical 3-dimensional matching it
 proves that the butterfly instance has a zero pairing into named spreads exactly when a
 matching exists (`N3DM.theorem1`), the same for spreads of at most three or four legs
@@ -820,7 +963,7 @@ priced by their maximum loss on the butterfly and condor instances (`N3DM.theore
 proves Theorem 3's equivalence and that no group costs less than `R`
 (`SubsetSumInstance.theorem3`, `cost_ge_R`), the reduction to `k`-subset sum
 (`subsetSum_iff_kSubsetSum`), and Theorem 4 with every uncovered requirement computed by R3
-from prices it proves free of arbitrage (`KSubsetSumInstance.theorem4`, `price_valid`).
+from prices it proves within the no-arbitrage bounds (`KSubsetSumInstance.theorem4`, `price_valid`).
 Theorem 4 is stated in units of `1/(2k)`, with `K_low = 2S`. The Lean proofs follow the
 arguments above, except that Theorems 3 and 4 need only a lower bound on the maximum loss,
 and found no gap. Proposition 5 is not formalized.

@@ -6,7 +6,7 @@ public import PairingHardness.Theorem3
 # Theorem 4: the one-group problem with every short priced by R3
 
 docs/proofs.md, Theorem 4. The uncovered requirements are no longer free inputs: each is
-R3's, at stock rates, from call prices that are free of arbitrage. The source problem is
+R3's, at stock rates, from call prices within the no-arbitrage bounds. The source problem is
 `k`-subset sum, which subset sum reduces to (`subsetSum_iff_kSubsetSum`).
 
 The paper's construction has fractional strikes and prices; multiplying every amount by

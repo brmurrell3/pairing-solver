@@ -23,6 +23,7 @@ positive numbers in each of `A`, `B`, `C` and a positive bound):
 | `subsetSum_iff_kSubsetSum` | Subset sum reduces to `k`-subset sum, by the replacement in Theorem 4's text. |
 | `KSubsetSumInstance.theorem4` | For positive numbers, `k ≥ 2` and `T ≤ Σa`: exactly `k` of them sum to `T` exactly when one group costs at most `R`, with every uncovered requirement computed by R3 at stock rates (`r3Call`) from the call prices `C(K) = 2k + (K_top − K)/(2k)`. `price_valid` and `price_antitone`: those prices are positive, at most the underlying, at least intrinsic value, falling in the strike and affine. |
 | `SubsetSumInstance.size`, `KSubsetSumInstance.size` | `2n + 1` contracts, at strikes from 1 to `T + 1` and from `2S` to `2S + V`. |
+| `N3DM.theorem1_gap`, `N3DM.theorem2_three_gap`, `N3DM.theorem2_four_gap` | The gap behind Corollary 6: if every positive spread requirement and every uncovered requirement is at least `μ > 0`, then on a source instance with no matching every pairing of the instance requires at least `μ`. `Pairing.requirement_eq_zero_or_ge` is the general step. |
 
 `AxiomCheck.lean` prints the axioms each result uses (only `propext`, `Classical.choice`
 and `Quot.sound`, no `sorryAx`) and checks the example of Theorem 1 by `decide`.
@@ -39,6 +40,10 @@ and `Quot.sound`, no `sorryAx`) and checks the example of Theorem 1 by `decide`.
   (`T ≤ a_i` for some `i`; `k < 2` or `T > Σa`); `subsetSum_iff_filter` covers the first.
 - **Membership in NP** is not formalized. The hardness, which is what the results are used
   for, does not need it.
+- **Corollary 6's pricing step**: that the shifted, small-premium prices are valid, that R3
+  charges every short at least `μ`, and that the long premiums are at most `μ / ρ`. The
+  Lean statements take `μ` as a hypothesis on the requirements.
+- **Proposition 7** (one group with several expirations) is not formalized.
 - **Proposition 5** (a dynamic program for butterflies and condors on adjacent strikes) is not
   formalized. It is an algorithm with a 12-counter state, and proofs.md gives it as a sketch;
   a Lean proof would first need the transitions and their costs written out. Its claim is
@@ -102,3 +107,4 @@ takes about half a minute.
 | `PairingHardness/Ladder.lean` | One-group requirement, and the position shared by Theorems 3 and 4 |
 | `PairingHardness/Theorem3.lean` | Theorem 3 |
 | `PairingHardness/Theorem4.lean` | Subset sum to `k`-subset sum, R3 prices, Theorem 4 |
+| `PairingHardness/Approx.lean` | The gap form of Theorems 1 and 2 (Corollary 6) |

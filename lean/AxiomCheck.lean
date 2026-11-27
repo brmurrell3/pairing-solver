@@ -20,6 +20,9 @@ open PairingHardness
 #print axioms KSubsetSumInstance.price_valid
 #print axioms KSubsetSumInstance.price_antitone
 #print axioms KSubsetSumInstance.size
+#print axioms N3DM.theorem1_gap
+#print axioms N3DM.theorem2_three_gap
+#print axioms N3DM.theorem2_four_gap
 
 /-- The example of docs/proofs.md, Theorem 1: `a = (1, 2)`, `b = (3, 1)`, `c = (3, 4)`,
 `B = 7`, so `W = 7` and `M = 84`. -/
