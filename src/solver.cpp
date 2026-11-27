@@ -218,13 +218,18 @@ struct Builder {
         // strike and a collar the put's strike below the call's; skipping other pairs only
         // saves calls it would reject. (Its rejections are exceptions, about 5 µs each:
         // trying every pair cost 70 ms of the 85 ms model build for a 1,000-series book.)
+        // Puts by (expiration, deliverable), so each call meets only the puts it can pair with
+        // (comparing every call with every put was a million pairs at 1,000 series).
+        std::map<std::pair<Date, std::int64_t>, std::vector<int>> puts_by;
+        for (int u = 0; u < n; ++u)
+            if (p.options[u].option.type == OptionType::put)
+                puts_by[{p.options[u].option.expiry, p.options[u].option.deliverable}].push_back(u);
         for (int c = 0; c < n; ++c) {
             if (p.options[c].option.type != OptionType::call) continue;
-            for (int u = 0; u < n; ++u) {
+            auto match = puts_by.find({p.options[c].option.expiry, p.options[c].option.deliverable});
+            if (match == puts_by.end()) continue;
+            for (int u : match->second) {
                 const OptionLeg &call = p.options[c], &put = p.options[u];
-                if (put.option.type != OptionType::put || call.option.expiry != put.option.expiry ||
-                    call.option.deliverable != put.option.deliverable)
-                    continue;
                 std::int64_t w = leg(c, 1).option.deliverable;
                 StockLeg s = shares(w);
                 const bool same_strike = call.option.strike == put.option.strike;
