@@ -248,4 +248,14 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
   | `bounds` / `fits` (resize, close) | 8.6 ms | 1.6–1.8 ms |
 
   The 1,000-series numbers are unchanged. HiGHS suites: 0 failures. The cold solve is slower (11,688 pivots against 4,582: both large-book forms add degenerate rows), and each order kind still has a slow tail of a few hundred milliseconds.
-- *Tails at 5,000 (2026-11-27):* the slow orders' root re-solve takes 0 to 50 pivots; their time is the held dive's 5 to 8 LP solves, up to 1,000 pivots, rounding 12 to 14 fractional columns one at a time. Rounding them all in one solve when there are 10 or more (and diving on from there when that stays feasible) took the resize p99 from 203 to 89 ms but its median from 25 to 40 ms; the 1,000-series book has fewer to round and is unchanged. New-series and close tails (p99 229 and 312 ms) are orders where that one solve is infeasible and the one-at-a-time dive runs anyway. What would cut them: a valid incumbent for every order (the carried pairing of `bounds`, mapped into the model's columns) so a dive can stop at a work limit with a good answer.
+- *Tails at 5,000 (2026-11-27):* the slow orders' root re-solve takes 0 to 50 pivots; their time is the held dive's 5 to 8 LP solves, up to 1,000 pivots, rounding 12 to 14 fractional columns one at a time. Rounding them all in one solve when there are 10 or more (and diving on from there when that stays feasible) took the resize p99 from 203 to 89 ms but its median from 25 to 40 ms; the 1,000-series book has fewer to round and is unchanged. New-series and close tails (p99 229 and 312 ms) are orders where that one solve is infeasible and the one-at-a-time dive runs anyway. What would cut them: a valid incumbent for every order, so a dive can stop at a work limit with a good answer.
+- *Carried pairing and dive budget (2026-11-27):* a Book now prices the book's pairing carried over the order (the upper bound of `bounds`) before searching, and branch-and-bound takes its value as a cutoff (no model assignment needed: if nothing beats it, it is the answer). Each rounding dive gets `SolveOptions::dive_pivot_limit` pivots (150, agent's choice), enforced inside its LP solves; with a budget the one-shot rounding is off (it won back the resize median) and the later dive stages are skipped once the incumbent meets the gap.
+
+  | 5,000-series book (30 orders each) | Median | p99 |
+  |---|---|---|
+  | Resize | 25 ms | 74 ms |
+  | New series | 53 ms | 76 ms |
+  | Close | 54 ms | 99 ms |
+  | `bounds` / `fits` | 1.6–1.9 ms | 2.2 ms |
+
+  Against a cold solve of the same positions, `what_if` totals are at most 0.047% above at 5,000 series (mean 0.008% or less) and 0.005% at 1,000. The 1,000-series times are unchanged. The cold solve (2.0 s at 5,000) is untouched.
