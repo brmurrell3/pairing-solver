@@ -323,6 +323,7 @@ void compact_straddles() {
         compact.compact_straddle_pairs = 0;
         chain.compact_straddle_pairs = 0;
         chain.straddle_chain_shorts = 0;  // the running-balance form of the matching rows
+        chain.strike_walk_entries = 0;    // and the strike walk's form of the loss rows
         Solution a = solve(p, rr, pairs), b = solve(p, rr, compact), c = solve(p, rr, chain);
         CHECK_EQ(a.total, b.total);
         CHECK_EQ(a.total, c.total);
@@ -498,7 +499,15 @@ void book_orders() {
         Portfolio p = gen::portfolio(rng, shape);
         if (p.options.empty()) continue;
         RuleSet rr = gen::rules(rng, rules[k % 3]);
-        Book book(p, rr, exact);
+        // Half the books in the large-book forms (compact straddles, running balance, strike
+        // walk), so the Book's in-place bound updates are checked on them too.
+        SolveOptions form = exact;
+        if (k % 2 == 1) {
+            form.compact_straddle_pairs = 0;
+            form.straddle_chain_shorts = 0;
+            form.strike_walk_entries = 0;
+        }
+        Book book(p, rr, form);
         CHECK_EQ(book.solution().total, solve(p, rr, exact).total);
         for (int t = 0; t < 4; ++t) {
             Portfolio after = p;

@@ -64,8 +64,10 @@ struct Builder {
     std::int64_t compact_straddle_pairs;
     bool straddles_on;
     int straddle_chain_shorts;
-    Builder(const Portfolio& p_, const RuleSet& r_, std::int64_t lots_, std::int64_t compact, bool straddles_, int chain)
-        : p(p_), r(r_), lots(lots_), compact_straddle_pairs(compact), straddles_on(straddles_), straddle_chain_shorts(chain) {
+    double walk_entries;
+    Builder(const Portfolio& p_, const RuleSet& r_, std::int64_t lots_, std::int64_t compact, bool straddles_, int chain, double walk)
+        : p(p_), r(r_), lots(lots_), compact_straddle_pairs(compact), straddles_on(straddles_), straddle_chain_shorts(chain),
+          walk_entries(walk) {
         n = static_cast<int>(p.options.size());
         has_stock = p.stock.shares != 0;
         m.lots_per_contract = lots;
@@ -456,40 +458,72 @@ struct Builder {
         std::sort(strikes.begin(), strikes.end());
         strikes.erase(std::unique(strikes.begin(), strikes.end()), strikes.end());
 
-        // Netted value of one lot at each strike: Phase 1's payoff_at, (strike distance)+ ×
-        // units, done here in exact integer micro-dollars when that cannot overflow (one call
-        // per lot and strike was most of a 1,000-series model build).
-        std::vector<std::vector<double>> value(candidates.size());
-        double t_up = 0;  // the shorts' loss alone bounds the group's
-        std::vector<double> loss_up(strikes.size(), 0);
+        // The group's payoff at strike K_k is P_k = Σ x_i v_i(K_k), v_i being one lot's netted
+        // value there (Phase 1's payoff_at). Rows t + P_k >= 0 make t the maximum loss. Written
+        // out, each member would have a nonzero in every row where it pays: series × strikes
+        // nonzeros, 937,000 in the basis of a 5,000-series book. With the puts balanced (a row
+        // below), the payoff's slope between K_k and K_{k+1} is D_k, the units at strikes up to
+        // K_k (spec §3.1 item 1), so
+        //   P_0 = Σ x_i v_i(K_0),   P_k = P_{k-1} + (K_k - K_{k-1}) D_{k-1},
+        //   D_k = D_{k-1} + Σ_{s_i = K_k} u_i x_i,
+        // and each member sits in the D row of its strike and, for puts above K_0, the P_0 row.
+        // A member's value is monotone in K, so its extremes are at K_0 and the top strike;
+        // they bound P, t and (by units) D. That adds two rows and columns per strike and
+        // gives a larger LU nucleus, which is slower on small books (a 1,000-series book
+        // solved twice as slowly cold), so groups of fewer than walk_entries member-strike
+        // pairs keep the direct rows, t + Σ x_i v_i(K_k) >= 0.
+        const bool walk = static_cast<double>(candidates.size()) * static_cast<double>(strikes.size()) > walk_entries;
+        auto value_at = [&](const OptionLeg& one, Money k) {
+            const bool call = one.option.type == OptionType::call;
+            const std::int64_t d = call ? k.micros() - one.option.strike.micros() : one.option.strike.micros() - k.micros();
+            std::int64_t micros = 0;
+            if (d > 0 && __builtin_mul_overflow(d, one.units(), &micros)) micros = payoff_at({one}, k).micros();
+            return static_cast<double>(micros) / Money::per_dollar;
+        };
+        const int S = static_cast<int>(strikes.size());
+        std::vector<double> v0(candidates.size()), worst(candidates.size()), best(candidates.size());
+        double t_up = 0, best_sum = 0, long_units = 0, short_units = 0;
         for (std::size_t c = 0; c < candidates.size(); ++c) {
             const int i = candidates[c];
-            auto& v = value[c];
-            v.reserve(strikes.size());
-            double worst = 0, best = 0;
-            const std::vector<OptionLeg> one = {leg(i, 1)};
-            const bool call = one[0].option.type == OptionType::call;
-            const std::int64_t s = one[0].option.strike.micros(), u = one[0].units();
-            for (Money k : strikes) {
-                const std::int64_t d = call ? k.micros() - s : s - k.micros();
-                std::int64_t micros = 0;
-                if (d > 0 && __builtin_mul_overflow(d, u, &micros)) micros = payoff_at(one, k).micros();
-                v.push_back(static_cast<double>(micros) / Money::per_dollar);
-                worst = std::min(worst, v.back());
-                best = std::max(best, v.back());
-            }
-            t_up += -worst * static_cast<double>(cap[i]);
-            for (std::size_t k = 0; k < strikes.size(); ++k) loss_up[k] += best * static_cast<double>(cap[i]);
+            const OptionLeg one = leg(i, 1);
+            v0[c] = value_at(one, strikes.front());
+            const double vt = value_at(one, strikes.back());
+            worst[c] = std::min({0.0, v0[c], vt});
+            best[c] = std::max({0.0, v0[c], vt});
+            t_up += -worst[c] * static_cast<double>(cap[i]);
+            best_sum += best[c] * static_cast<double>(cap[i]);
+            (one.units() > 0 ? long_units : short_units) += static_cast<double>(std::llabs(one.units()) * cap[i]);
         }
-        std::vector<int> loss_row;
+        Model::Group gc;
+        std::vector<int> loss_row(S), p_row(S), d_row(std::max(0, S - 1));
         std::vector<Lp::Entry> t_entries;
-        for (std::size_t k = 0; k < strikes.size(); ++k) {
-            loss_row.push_back(row(0, t_up + loss_up[k], Key{} << 'l' << g << strikes[k].micros()));
-            t_entries.push_back({loss_row.back(), 1.0});
+        for (int k = 0; k < S; ++k) {
+            loss_row[k] = row(0, lp_infinity, Key{} << 'l' << g << strikes[k].micros());
+            t_entries.push_back({loss_row[k], 1.0});
         }
-        column(1.0, 0, t_up, std::move(t_entries), Key{} << 'L' << g);
+        gc.loss = column(1.0, 0, t_up, std::move(t_entries), Key{} << 'L' << g);
         m.integer.push_back(false);
         m.column.push_back({Model::Column::loss, h});
+        if (walk) {
+        for (int k = 0; k < S; ++k) p_row[k] = row(0, 0, Key{} << 'p' << g << strikes[k].micros());
+        for (int k = 0; k + 1 < S; ++k) d_row[k] = row(0, 0, Key{} << 'd' << g << strikes[k].micros());
+        for (int k = 0; k < S; ++k) {
+            std::vector<Lp::Entry> e = {{loss_row[k], 1.0}, {p_row[k], 1.0}};
+            if (k + 1 < S) e.push_back({p_row[k + 1], -1.0});
+            gc.payoff.push_back(column(0, -t_up, best_sum, std::move(e), Key{} << 'P' << g << strikes[k].micros()));
+            m.integer.push_back(false);
+            m.column.push_back({Model::Column::payoff, h});
+        }
+        for (int k = 0; k + 1 < S; ++k) {
+            const double width = dollars(strikes[k + 1] - strikes[k]);
+            std::vector<Lp::Entry> e = {{d_row[k], 1.0}, {p_row[k + 1], -width}};
+            if (k + 2 < S) e.push_back({d_row[k + 1], -1.0});
+            gc.slope.push_back(column(0, -short_units, long_units, std::move(e), Key{} << 'D' << g << strikes[k].micros()));
+            m.integer.push_back(false);
+            m.column.push_back({Model::Column::slope, h});
+        }
+        }
+        m.group.push_back(std::move(gc));
 
         struct TypeRows {
             int balance = -1;
@@ -519,8 +553,14 @@ struct Builder {
             OptionLeg one = leg(i, 1);
             double units = static_cast<double>(one.units());
             std::vector<Lp::Entry> e = {{m.capacity_row[i], 1.0}};
-            for (std::size_t k = 0; k < strikes.size(); ++k)
-                if (value[c][k] != 0) e.push_back({loss_row[k], value[c][k]});
+            if (walk) {
+                if (v0[c] != 0) e.push_back({p_row[0], -v0[c]});
+                const int at = static_cast<int>(std::lower_bound(strikes.begin(), strikes.end(), o.option.strike) - strikes.begin());
+                if (at + 1 < S) e.push_back({d_row[at], -units});
+            } else {
+                for (int k = 0; k < S; ++k)
+                    if (const double v = value_at(one, strikes[k]); v != 0) e.push_back({loss_row[k], v});
+            }
             const TypeRows& tr = rows[o.option.type];
             e.push_back({tr.balance, units});
             for (auto [d, row] : tr.suffix)
@@ -528,9 +568,13 @@ struct Builder {
             // Shorts in the group leave their standalone requirement for the group's loss.
             // Longs are paid in full, which costs a long beyond nine months its loan value (Q3).
             Money cost = o.quantity > 0 ? market_value(one) - unit[i] : -unit[i];
-            column(dollars(cost), 0, static_cast<double>(cap[i]), std::move(e), Key{} << 'm' << g << series(i));
+            const int j = column(dollars(cost), 0, static_cast<double>(cap[i]), std::move(e), Key{} << 'm' << g << series(i));
             m.integer.push_back(true);
             m.column.push_back({Model::Column::member, h, i});
+            m.member_worst.resize(j + 1, 0.0);
+            m.member_best.resize(j + 1, 0.0);
+            m.member_worst[j] = worst[c];
+            m.member_best[j] = best[c];
         }
         aggregates(candidates, g);
     }
@@ -610,7 +654,8 @@ struct Builder {
 
 Model build_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o) {
     if (o.lots_per_contract < 1) throw std::invalid_argument("lots per contract must be at least 1");
-    Builder b(p, r, o.lots_per_contract, o.compact_straddle_pairs, o.straddles, o.straddle_chain_shorts);
+    Builder b(p, r, o.lots_per_contract, o.compact_straddle_pairs, o.straddles, o.straddle_chain_shorts,
+              static_cast<double>(o.strike_walk_entries));
     b.capacities();
     b.templates();
     b.long_boxes();
@@ -636,7 +681,7 @@ Solution read_solution(const Model& m, const Portfolio& p, const std::vector<dou
     for (int j = 0; j < m.lp.cols(); ++j) {
         const auto& c = m.column[j];
         if (c.kind == Model::Column::loss || c.kind == Model::Column::aggregate ||
-            c.kind == Model::Column::straddle_balance)
+            c.kind == Model::Column::straddle_balance || c.kind == Model::Column::payoff || c.kind == Model::Column::slope)
             continue;
         if (c.kind == Model::Column::straddle_cheap || c.kind == Model::Column::straddle_expensive) {
             std::int64_t v = std::llround(x[j]);
@@ -839,13 +884,15 @@ LpBasis map_basis(const Model& from, const LpBasis& b, const Model& to) {
         out.state[j] = st;
         if (st == 0) basic_cols.push_back(j);
     }
-    // A new row takes as its basic variable a new continuous column in it, where there is
-    // one, rather than its own logical: a straddle class's running balance gains a row and
+    // A new equality row takes as its basic variable a new continuous column in it, where
+    // there is one, rather than its own logical: a straddle class's running balance gains a row and
     // a column for each new short, and with the logical basic instead the chain was cut,
     // the duals above the cut changed, and on a 5,000-series book 1,705 columns came out
     // dual infeasible (943 pivots to repair, against a handful).
     std::vector<char> new_row(m1, 0);
-    for (int i = 0; i < m1; ++i) new_row[i] = !row.count(to.row_key[i]);
+    // Only equality rows: an inequality row's logical is a natural basic variable (a loss
+    // row with room), an equality row's is fixed at zero.
+    for (int i = 0; i < m1; ++i) new_row[i] = !row.count(to.row_key[i]) && to.lp.row_lo[i] == to.lp.row_up[i];
     std::vector<char> paired(m1, 0);
     for (int j = 0; j < n1; ++j) {
         if (to.integer[j] || col.count(to.col_key[j]) || out.state[j] == 0) continue;
@@ -978,10 +1025,7 @@ void Book::index_model() {
     aggregate_of_.assign(lp.rows(), -1);
     for (int j = 0; j < lp.cols(); ++j) {
         const auto& c = m.column[j];
-        if (c.kind == Model::Column::loss) {
-            loss_column_[c.index] = j;
-            for (const auto& e : lp.columns[j]) row_role_[e.row] = 1;
-        }
+        if (c.kind == Model::Column::loss) loss_column_[c.index] = j;
         if (c.kind == Model::Column::aggregate)
             for (const auto& e : lp.columns[j]) {
                 row_role_[e.row] = 2;
@@ -1052,16 +1096,15 @@ Solution Book::price_resize(int i, std::int64_t quantity) {
             }
             case Model::Column::member: {
                 set_col(j, lp.col_lo[j], new_cap);
-                double worst = 0, best = 0;
-                for (const auto& e : lp.columns[j])
-                    if (row_role_[e.row] == 1) {
-                        worst = std::min(worst, e.value);
-                        best = std::max(best, e.value);
-                    }
-                const int t = loss_column_[c.index];
-                const double t_delta = -worst * delta;
-                set_col(t, lp.col_lo[t], lp.col_up[t] + t_delta);
-                for (const auto& e : lp.columns[t]) set_row_up(e.row, lp.row_up[e.row] + t_delta + best * delta);
+                // The group's loss and payoff bounds move with this member's extremes, its
+                // running-unit bounds with its units.
+                const Model::Group& gc = m.group[c.index];
+                const double t_delta = -m.member_worst[j] * delta, b_delta = m.member_best[j] * delta;
+                set_col(gc.loss, lp.col_lo[gc.loss], lp.col_up[gc.loss] + t_delta);
+                for (int pc : gc.payoff) set_col(pc, lp.col_lo[pc] - t_delta, lp.col_up[pc] + b_delta);
+                const double u_delta = static_cast<double>(std::llabs(lot_leg(pos, 1, lots).units())) * delta;
+                for (int dc : gc.slope)
+                    set_col(dc, lp.col_lo[dc] - (pos.quantity < 0 ? u_delta : 0), lp.col_up[dc] + (pos.quantity > 0 ? u_delta : 0));
                 for (const auto& e : lp.columns[j]) {
                     if (row_role_[e.row] == 2) aggregates.push_back(aggregate_of_[e.row]);
                     // Suffix rows: bounded by the long units, with this member's coefficient.

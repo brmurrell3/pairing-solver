@@ -43,6 +43,12 @@ struct SolveOptions {
     // same optimum. 2,000 (agent's choice, docs/plan.md Phase 8): a 5,000-series book's class
     // of 2,531 shorts takes the balance, a 1,000-series book's of 487 does not.
     int straddle_chain_shorts = 2000;
+    // A max-loss group's loss rows: written directly, a nonzero per member and strike where
+    // it pays; above this many member-strike pairs, the strike walk's recursion with O(1)
+    // nonzeros per member instead (Builder::group). Same optimum. 2,000,000 (agent's choice,
+    // docs/plan.md Phase 8): a 5,000-series book's group (5,000 x about 1,250) takes the walk,
+    // a 1,000-series book's (1,000 x about 250) does not.
+    std::int64_t strike_walk_entries = 2'000'000;
     // false: no short straddles (R6), a template policy (spec §3.3). The strike dynamic
     // program does not model them, so its tests compare against the solver with them off.
     bool straddles = true;
@@ -159,7 +165,8 @@ struct Model {
         // straddle_cheap and straddle_expensive: lots of a short option that join short
         // straddles (R6) on the cheaper or the dearer side; see Builder::straddles.
         // straddle_balance: a running balance of one class's cheap and dear lots by rank.
-        enum Kind { template_unit, member, loss, aggregate, straddle_cheap, straddle_expensive, straddle_balance } kind;
+        // payoff, slope: a group's payoff P_k at a strike and running units D_k (Builder::group).
+        enum Kind { template_unit, member, loss, aggregate, straddle_cheap, straddle_expensive, straddle_balance, payoff, slope } kind;
         int index;  // template, group, or straddle class
         int position = 0;
         int rank = 0;  // straddle columns: the option's place in its class's order
@@ -181,6 +188,15 @@ struct Model {
     // Book uses them to start an order whose model differs from the book's at the book's
     // basis (map_basis in src/solver.cpp).
     std::vector<std::uint64_t> row_key, col_key;
+    // Per group: its loss column and its payoff and running-unit columns, by strike. Per
+    // member column: one lot's least and greatest value over the group's strikes, which
+    // bound the group's loss and payoff (a Book updates those bounds on a resize).
+    struct Group {
+        int loss = -1;
+        std::vector<int> payoff, slope;
+    };
+    std::vector<Group> group;
+    std::vector<double> member_worst, member_best;
 };
 
 Model build_model(const Portfolio& p, const RuleSet& r, const SolveOptions& o = {});
