@@ -235,4 +235,16 @@ Superseded criterion: match HiGHS to 1e-9 relative on at least 10,000 random por
 - *Result at 5,000 series:* `what_if` median 58 ms (resize, was 223), 93 ms (close, was 227), 195 ms (new series, was 291, but p99 1,080 ms against 402); `bounds` 5 ms; cold solve 1.7 s (unchanged: the balance doubles the pivots, 8,766, while making each cheaper). `pairing_highs_tests 1000 40` and `large`: 0 failures.
 - *Lazy straddle rows, measured before building (2026-11-27):* with only the two total rows per class, the 5,000-series root LP takes 581 ms (5,275 pivots) and violates 193 of its 2,531 suffix rows; the full model takes 1,588 ms. Adding violated rows back in rounds would end somewhere between, so at best about a halving of the cold solve, while every Book path (resize, close, new series, bounds) would have to handle a row set that grows with the solves. Not built; the cold solve happens once per book load.
 - *New series at 5,000:* also slow when the strike is already held (median 115 ms, p90 977 ms, 30 orders flipping a held series' type), so the cause is the new model's warm start, not a new loss row: the re-solve from the mapped basis takes 700 to 2,500 pivots. Likely cause, unconfirmed: a new short in a class of 2,531 changes which neighbours have cheap and dear columns. At 1,000 series the same orders take 7.5 ms median, 13.5 ms max.
-- *Open at 5,000:* the new-series warm start, and the cold solve (1.7 s).
+- *New-series warm start, fixed (2026-11-27):* a new short in a class of 2,531 adds a row and a column to the running balance; with the new row's logical basic the chain was cut, the duals above the cut changed, and 1,705 columns came out dual infeasible. `map_basis` now makes a new continuous column in each new equality row its basic variable. New-series p99 1,080 to 162 ms.
+- *Strike walk, for very large groups only:* above `SolveOptions::strike_walk_entries` member-strike pairs (2,000,000, agent's choice) a group's loss rows become the strike walk's recursion. A 1,000-series book's group (about 250,000 pairs) keeps the direct rows, where the walk was twice as slow cold.
+- *Result at 5,000 series (30 orders of each kind):*
+
+  | 5,000-series book | Start of Phase 8 | Now |
+  |---|---|---|
+  | Cold solve | 1.73 s | 2.06 s |
+  | Resize: median / p99 | 223 / 349 ms | 25 / 203 ms |
+  | New series: median / p99 | 291 / 402 ms | 50 / 207 ms |
+  | Close: median / p99 | 227 / 1,249 ms | 59 / 348 ms |
+  | `bounds` / `fits` (resize, close) | 8.6 ms | 1.6–1.8 ms |
+
+  The 1,000-series numbers are unchanged. HiGHS suites: 0 failures. The cold solve is slower (11,688 pivots against 4,582: both large-book forms add degenerate rows), and each order kind still has a slow tail of a few hundred milliseconds.
