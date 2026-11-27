@@ -267,12 +267,17 @@ struct Builder {
         const std::int64_t cls_key = Key{} << 'q' << std::llabs(leg(shorts.front(), 1).units());
         const int k = static_cast<int>(order.size());
         std::vector<int> cheap(k, -1), dear(k, -1);
+        // first[t] / last[t]: the lowest and highest rank of type t (0 call, 1 put).
+        int first[2] = {k, k}, last[2] = {-1, -1};
+        for (int rank = 0; rank < k; ++rank) {
+            const int t = std::get<1>(order[rank]);
+            first[t] = std::min(first[t], rank);
+            last[t] = rank;
+        }
         for (int rank = 0; rank < k; ++rank) {
             const auto [u, put, i] = order[rank];
             // The cheap side needs a dearer leg of the other type; the dear side a cheaper one.
-            bool above = false, below = false;
-            for (int o = 0; o < k; ++o)
-                if (std::get<1>(order[o]) != put) (o > rank ? above : below) = true;
+            const bool above = last[1 - put] > rank, below = first[1 - put] < rank;
             Money saving = u - market_value(leg(i, 1));
             const double up = static_cast<double>(cap[i]);
             if (above && saving > Money{}) {
