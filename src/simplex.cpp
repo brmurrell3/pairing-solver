@@ -875,6 +875,43 @@ bool dive(DualSimplex& simplex, const Lp& lp, const std::vector<bool>& integer, 
         }
         // With the rest held each LP is small, so trying the other sides is cheap.
         backtracks = 40;
+        // First round every fractional column at once: one solve instead of one per column
+        // when that lands on the grid. On a 5,000-series book the one-at-a-time dive took 5
+        // to 8 solves and up to 1,000 pivots, the slowest orders' whole cost.
+        std::vector<Held> batch;
+        for (int j = 0; j < lp.cols(); ++j) {
+            if (!integer[j]) continue;
+            const double v = std::round(sol.x[j]);
+            if (std::fabs(sol.x[j] - v) <= integer_tol || v < simplex.lower(j) || v > simplex.upper(j)) continue;
+            batch.push_back({j, simplex.lower(j), simplex.upper(j)});
+            simplex.set_bounds(j, v, v);
+        }
+        if (batch.size() < 10) {  // few to round: the one-at-a-time dive is cheap enough
+            for (auto it = batch.rbegin(); it != batch.rend(); ++it) simplex.set_bounds(it->col, it->lo, it->up);
+            batch.clear();
+        }
+        if (!batch.empty()) {
+            LpSolution next = simplex.solve();
+            iterations += next.iterations;
+            bool on_grid = next.status == LpStatus::optimal;
+            for (int j = 0; j < lp.cols() && on_grid; ++j)
+                if (integer[j] && std::fabs(next.x[j] - std::round(next.x[j])) > integer_tol) on_grid = false;
+            if (on_grid) {
+                for (auto it = batch.rbegin(); it != batch.rend(); ++it) simplex.set_bounds(it->col, it->lo, it->up);
+                for (const Held& h : held) simplex.set_bounds(h.col, h.lo, h.up);
+                x = next.x;
+                objective = next.objective;
+                return true;
+            }
+            if (next.status == LpStatus::optimal) {
+                // Off the grid but feasible: keep the rounding (held like the rest) and dive
+                // from there; the few columns it moved off the grid are the ones left to round.
+                held.insert(held.end(), batch.begin(), batch.end());
+                sol = std::move(next);
+            } else {
+                for (auto it = batch.rbegin(); it != batch.rend(); ++it) simplex.set_bounds(it->col, it->lo, it->up);
+            }
+        }
     }
     for (long steps = 0; steps <= 4L * lp.cols() + 100; ++steps) {
         int pick = -1, level = 0;
